@@ -2,6 +2,10 @@
 
 Local-first task context and provenance layer for desktop operating systems. Windows-first.
 
+“Windows-first” defines delivery order, not a Windows-only product and not
+cross-device sync. The contracts, core, storage rules, and client API are shared;
+macOS and Linux later supply their own collectors, local transport, and packages.
+
 This repository is an architecture-first alpha scaffold. It currently proves the contracts that future collectors, storage, task views, and platform adapters must share. It is not yet an end-user application.
 
 ## Current vertical slice
@@ -11,6 +15,10 @@ This repository is an architecture-first alpha scaffold. It currently proves the
 - atomic SQLite event + projection writes;
 - duplicate-event idempotency;
 - stable Windows file identity across rename;
+- real `ReadDirectoryChangesW` directory batches with explicit gap semantics;
+- a 1 MiB-capped, versioned local JSON framing contract;
+- a local-only Named Pipe protected by a current-user SID DACL;
+- a Native Messaging host that validates origin, URLs, paths, and protocol version;
 - automatic download/file correlation in either arrival order;
 - duplicate replay repair after an interrupted derived projection;
 - forward-only, version-checked SQLite schema migration;
@@ -34,6 +42,23 @@ Run the current agent self-check against a local database:
 
 ```powershell
 cargo run -p context-agent -- --self-check .\context.db
+```
+
+Observe one real Windows directory change and persist it:
+
+```powershell
+cargo run -p context-agent -- --watch-once C:\path\you\selected .\context.db
+```
+
+The one-shot pipe server and Native Host agent diagnostic exercise the process
+boundary used by the browser bridge:
+
+```powershell
+# terminal 1
+cargo run -p context-agent -- --serve-once .\context.db
+
+# terminal 2
+cargo run -p context-native-host -- --agent-self-check
 ```
 
 ## Non-goals for the first foundation release

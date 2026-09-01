@@ -17,8 +17,10 @@ File locations, URLs, task names, inferred relationships, exclusion rules, raw e
 
 - no network service, account, or cloud storage;
 - current-user process and IPC ACL, no Windows service;
+- Named Pipe rejects remote clients and its protected DACL grants access only to LocalSystem and the current user SID;
 - explicit path/app/domain scopes before collection;
 - length-delimited, size-limited, typed IPC messages;
+- Native Messaging requires an exact allowlisted extension origin and validates URL scheme/host and absolute Windows paths;
 - append-only evidence with detector version and status;
 - UI has no database access;
 - sensitive logs omit document content and URLs by default;

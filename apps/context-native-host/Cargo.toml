@@ -1,0 +1,16 @@
+[package]
+name = "context-native-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+context-contracts.workspace = true
+context-local-ipc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+uuid.workspace = true
+url.workspace = true

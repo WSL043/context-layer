@@ -3,6 +3,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 pub const CURRENT_SCHEMA_VERSION: u16 = 1;
+pub const LOCAL_API_VERSION: u16 = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -129,6 +130,35 @@ impl EventEnvelope {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LocalApiRequest {
+    pub request_id: Uuid,
+    pub protocol_version: u16,
+    pub command: LocalApiCommand,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum LocalApiCommand {
+    Handshake { client_name: String },
+    SubmitEvent { event: Box<EventEnvelope> },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LocalApiResponse {
+    pub request_id: Uuid,
+    pub protocol_version: u16,
+    pub result: LocalApiResult,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum LocalApiResult {
+    Ready { server_name: String },
+    EventAccepted { event_id: Uuid, duplicate: bool },
+    Error { code: String, message: String },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,5 +202,21 @@ mod tests {
         let expected: serde_json::Value = serde_json::from_str(fixture).unwrap();
         let actual = serde_json::to_value(decoded).unwrap();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn local_api_request_has_an_explicit_protocol_version() {
+        let request = LocalApiRequest {
+            request_id: Uuid::now_v7(),
+            protocol_version: LOCAL_API_VERSION,
+            command: LocalApiCommand::Handshake {
+                client_name: "contract-test".into(),
+            },
+        };
+
+        let json = serde_json::to_string(&request).unwrap();
+        let decoded: LocalApiRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, request);
+        assert!(json.contains("protocol_version"));
     }
 }
