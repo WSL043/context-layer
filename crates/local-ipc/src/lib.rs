@@ -89,6 +89,10 @@ mod unsupported {
 
     pub struct NamedPipeConnection;
 
+    impl Drop for NamedPipeConnection {
+        fn drop(&mut self) {}
+    }
+
     impl Read for NamedPipeConnection {
         fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
             Err(error())
