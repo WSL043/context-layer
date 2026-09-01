@@ -12,16 +12,18 @@
 
 仓库已经完成第一轮可执行基础，而不再只是目录脚手架：
 
-- Windows `ReadDirectoryChangesW` 真实目录事件批次与零字节 `gap_detected` 语义；
+- 可取消的 overlapped `ReadDirectoryChangesExW` 连续事件批次、记录内 File ID 与零字节 `gap_detected` 语义；
+- 每个来源/范围的 SQLite 检查点、启动重扫、缺口重扫与拒绝子树隔离；
 - 卷序列号 + File ID 身份以及重命名稳定性测试；
 - 版本化本地 API、1 MiB 长度上限和 JSON 帧；
 - 用当前用户 SID 构造名称及 DACL、拒绝远程客户端的 Windows Named Pipe；
 - Native Messaging 帧读取、扩展 origin 白名单、URL 与绝对路径校验；
+- Manifest V3 Chromium 扩展、持久有界 outbox、稳定重试 UUID 与显式 outbox gap；
 - Native Host 到 Agent 再到 SQLite 的真实双进程验收。
 
-当前 watcher 使用一次阻塞读取来验证事件与存储的完整纵向切片。常驻代理阶段会在
-`platform-windows` 内部改成 overlapped `ReadDirectoryChangesExW`、持久检查点和增量重扫；
-事件合同、本地 API 与上层核心不随这次内部替换而改变。
+watcher 已经改成 overlapped 连续读取并可由 Ctrl+C 取消；Agent 在启动和 watcher gap 后
+执行范围重扫。SQLite v2 将来源序列与事件放在同一事务中提交，重启后不会从零猜测。
+拒绝或暂时不可读的子树会形成明确 gap，其他子树继续收敛，不会误删拒绝子树的历史位置。
 
 ## 本地、开源仍然没有消除的难点
 
@@ -152,7 +154,7 @@ struct EventEnvelope {
 
 用户在 UI 选择一个或多个根目录。`platform-windows` 使用异步 `ReadDirectoryChangesExW` 监控，并对每个进入范围的文件通过句柄取得卷序列号与 File ID。微软说明 `GetFileInformationByHandle` 返回的卷序列号和文件索引可以判断两个路径是否对应同一对象。[文件身份 API](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfileinformationbyhandle)。
 
-目录监控缓冲区可能溢出；微软规定溢出时返回零字节，应用应重新枚举目录。因此协议必须内建：检查点、`gap_detected` 事件、范围内增量重扫和状态对账，而不是把 watcher 当可靠消息队列。[ReadDirectoryChangesExW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-readdirectorychangesexw)。
+目录监控缓冲区可能溢出；微软规定溢出时返回零字节，应用应重新枚举目录。因此协议必须内建：检查点、`gap_detected` 事件、范围内增量重扫和状态对账，而不是把 watcher 当可靠消息队列。[ReadDirectoryChangesExW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-readdirectorychangesexw)。这一机制现已在基础层实现，后续优化重点是大目录的增量扫描预算，而不是改变合同。
 
 ### 可选模式：USN 加速器
 

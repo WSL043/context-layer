@@ -19,8 +19,8 @@ use windows_sys::Win32::{
         TokenUser,
     },
     Storage::FileSystem::{
-        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_FIRST_PIPE_INSTANCE, OPEN_EXISTING,
-        PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
+        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_FIRST_PIPE_INSTANCE, FlushFileBuffers,
+        OPEN_EXISTING, PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
     },
     System::{
         Pipes::{
@@ -177,6 +177,10 @@ impl Write for NamedPipeConnection {
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        let succeeded = unsafe { FlushFileBuffers(self.handle) };
+        if succeeded == 0 {
+            return Err(io::Error::last_os_error());
+        }
         Ok(())
     }
 }

@@ -7,10 +7,13 @@ use context_contracts::{
 };
 use context_core::{ContextEngine, IngestOutcome};
 use context_local_ipc::{NamedPipeServer, read_frame, write_frame};
-use context_platform_windows::{DirectoryAction, DirectoryWatcher, file_identity};
+use context_platform_windows::{DirectoryAction, DirectoryWatcher, contract_path, file_identity};
 use context_storage_sqlite::SqliteRepository;
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+mod collector;
+mod runtime;
 
 fn main() -> Result<()> {
     let mut arguments = env::args_os().skip(1);
@@ -19,6 +22,11 @@ fn main() -> Result<()> {
         println!("usage: context-agent --self-check [database-path]");
         println!("       context-agent --serve-once [database-path]");
         println!("       context-agent --watch-once <directory> [database-path]");
+        println!("       context-agent --collect <directory> [database-path]");
+        println!("       context-agent --collect-batches <directory> <count> [database-path]");
+        println!("       context-agent --collector-health <directory> [database-path]");
+        println!("       context-agent --run <directory> [database-path]");
+        println!("       context-agent --run-batches <directory> <count> [database-path]");
         return Ok(());
     };
     if command == "--serve-once" {
@@ -38,6 +46,95 @@ fn main() -> Result<()> {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("context.db"));
         return watch_once(root, database_path);
+    }
+    if command == "--collect" {
+        let root = arguments
+            .next()
+            .map(PathBuf::from)
+            .context("--collect requires a directory")?;
+        let database_path = arguments
+            .next()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("context.db"));
+        return collector::run(root, database_path, None);
+    }
+    if command == "--collect-batches" {
+        let root = arguments
+            .next()
+            .map(PathBuf::from)
+            .context("--collect-batches requires a directory")?;
+        let count = arguments
+            .next()
+            .context("--collect-batches requires a positive batch count")?
+            .to_string_lossy()
+            .parse::<usize>()
+            .context("batch count must be a positive integer")?;
+        if count == 0 {
+            bail!("batch count must be greater than zero");
+        }
+        let database_path = arguments
+            .next()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("context.db"));
+        return collector::run(root, database_path, Some(count));
+    }
+    if command == "--collector-health" {
+        let root = arguments
+            .next()
+            .map(PathBuf::from)
+            .context("--collector-health requires a directory")?
+            .canonicalize()
+            .context("resolve collector scope")?;
+        let database_path = arguments
+            .next()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("context.db"));
+        let repository = SqliteRepository::open(&database_path)
+            .with_context(|| format!("open database {}", database_path.display()))?;
+        let scope_id = contract_path(&root);
+        println!(
+            "collector-health: sequence={}; reconciliation_required={}; active_locations={}; raw_events={}; download_edges={}; scope={}",
+            repository
+                .last_source_sequence("windows.directory-watcher", &scope_id)?
+                .unwrap_or(0),
+            repository.collector_reconciliation_required("windows.directory-watcher", &scope_id)?,
+            repository.active_locations_in_scope(&scope_id)?.len(),
+            repository.raw_event_count()?,
+            repository.observed_download_edge_count()?,
+            root.display()
+        );
+        return Ok(());
+    }
+    if command == "--run" {
+        let root = arguments
+            .next()
+            .map(PathBuf::from)
+            .context("--run requires a directory")?;
+        let database_path = arguments
+            .next()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("context.db"));
+        return runtime::run(root, database_path, None);
+    }
+    if command == "--run-batches" {
+        let root = arguments
+            .next()
+            .map(PathBuf::from)
+            .context("--run-batches requires a directory")?;
+        let count = arguments
+            .next()
+            .context("--run-batches requires a positive batch count")?
+            .to_string_lossy()
+            .parse::<usize>()
+            .context("batch count must be a positive integer")?;
+        if count == 0 {
+            bail!("batch count must be greater than zero");
+        }
+        let database_path = arguments
+            .next()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("context.db"));
+        return runtime::run(root, database_path, Some(count));
     }
     if command != "--self-check" {
         bail!("unknown command: {}", command.to_string_lossy());

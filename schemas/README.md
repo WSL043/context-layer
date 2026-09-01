@@ -8,3 +8,6 @@ Rules:
 - Additive compatible fields require a new fixture in the same version.
 - A breaking field or semantic change requires a new schema-version directory and a migration/compatibility ADR.
 - Fixtures contain synthetic paths and URLs only.
+
+`browser/v1` fixtures are shared by the JavaScript extension producer and Rust
+Native Host consumer so drift across the language/process boundary fails CI.

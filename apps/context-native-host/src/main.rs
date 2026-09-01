@@ -12,15 +12,29 @@ use url::Url;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-struct BrowserDownloadMessage {
-    protocol_version: u16,
-    browser: String,
-    download_id: Uuid,
-    url: String,
-    referrer: Option<String>,
-    final_path: String,
-    #[serde(with = "time::serde::rfc3339")]
-    observed_at: OffsetDateTime,
+#[serde(tag = "type", rename_all = "snake_case")]
+enum BrowserMessage {
+    DownloadCompleted {
+        protocol_version: u16,
+        browser: String,
+        browser_download_id: u64,
+        source_sequence: u64,
+        download_id: Uuid,
+        url: String,
+        referrer: Option<String>,
+        final_path: String,
+        #[serde(with = "time::serde::rfc3339")]
+        observed_at: OffsetDateTime,
+    },
+    CollectorGap {
+        protocol_version: u16,
+        browser: String,
+        gap_id: Uuid,
+        last_source_sequence: Option<u64>,
+        reason: String,
+        #[serde(with = "time::serde::rfc3339")]
+        observed_at: OffsetDateTime,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -40,7 +54,7 @@ fn main() -> Result<()> {
         .first()
         .is_some_and(|value| value == "--agent-self-check")
     {
-        return agent_self_check();
+        return agent_self_check(arguments.get(1).map(String::as_str));
     }
 
     let origin = arguments
@@ -55,7 +69,7 @@ fn main() -> Result<()> {
         bail!("browser extension origin is not allowlisted");
     }
 
-    let message: BrowserDownloadMessage = read_frame(&mut io::stdin().lock())?;
+    let message: BrowserMessage = read_frame(&mut io::stdin().lock())?;
     let request = request_from_browser(message)?;
     let mut pipe = NamedPipeClient::connect_current_user(5_000)
         .context("connect to the current-user context agent")?;
@@ -85,38 +99,91 @@ fn load_allowed_origins() -> Result<Vec<String>> {
     Ok(config.allowed_origins)
 }
 
-fn request_from_browser(message: BrowserDownloadMessage) -> Result<LocalApiRequest> {
-    if message.protocol_version != LOCAL_API_VERSION {
+fn request_from_browser(message: BrowserMessage) -> Result<LocalApiRequest> {
+    let (protocol_version, browser) = match &message {
+        BrowserMessage::DownloadCompleted {
+            protocol_version,
+            browser,
+            ..
+        }
+        | BrowserMessage::CollectorGap {
+            protocol_version,
+            browser,
+            ..
+        } => (*protocol_version, browser.to_ascii_lowercase()),
+    };
+    if protocol_version != LOCAL_API_VERSION {
         bail!(
             "unsupported browser protocol version {}; expected {}",
-            message.protocol_version,
+            protocol_version,
             LOCAL_API_VERSION
         );
     }
-    validate_web_url(&message.url).context("invalid download URL")?;
-    if let Some(referrer) = &message.referrer {
-        validate_web_url(referrer).context("invalid referrer URL")?;
-    }
-    if !is_absolute_windows_path(&message.final_path) {
-        bail!("download final_path must be an absolute Windows path");
-    }
-    let browser = message.browser.to_ascii_lowercase();
     if !matches!(browser.as_str(), "chrome" | "edge" | "chromium") {
         bail!("browser must be chrome, edge, or chromium");
     }
-    let event = EventEnvelope::observed(
-        format!("browser.{browser}"),
-        "scope.downloads",
-        message.observed_at,
-        EventPayload::BrowserDownloadObserved {
-            download_id: message.download_id,
-            url: message.url,
-            referrer: message.referrer,
-            final_path: message.final_path,
-        },
-        "context-native-host",
-        "browser downloads API through allowlisted native messaging origin",
-    );
+    let event = match message {
+        BrowserMessage::DownloadCompleted {
+            browser_download_id: _,
+            source_sequence,
+            download_id,
+            url,
+            referrer,
+            final_path,
+            observed_at,
+            ..
+        } => {
+            validate_web_url(&url).context("invalid download URL")?;
+            if let Some(referrer) = &referrer {
+                validate_web_url(referrer).context("invalid referrer URL")?;
+            }
+            if !is_absolute_windows_path(&final_path) {
+                bail!("download final_path must be an absolute Windows path");
+            }
+            let mut event = EventEnvelope::observed(
+                format!("browser.{browser}"),
+                "scope.downloads",
+                observed_at,
+                EventPayload::BrowserDownloadObserved {
+                    download_id,
+                    url,
+                    referrer,
+                    final_path,
+                },
+                "context-native-host",
+                "browser downloads API through allowlisted native messaging origin",
+            );
+            event.event_id = download_id;
+            event.source_sequence = Some(source_sequence);
+            event
+        }
+        BrowserMessage::CollectorGap {
+            gap_id,
+            last_source_sequence,
+            reason,
+            observed_at,
+            ..
+        } => {
+            if reason.is_empty() || reason.len() > 1024 {
+                bail!("collector gap reason must contain 1 to 1024 bytes");
+            }
+            let mut event = EventEnvelope::observed(
+                format!("browser.{browser}"),
+                "scope.downloads",
+                observed_at,
+                EventPayload::CollectorGap {
+                    collector: format!("browser.{browser}"),
+                    last_sequence: last_source_sequence,
+                    reason,
+                },
+                "context-native-host",
+                "browser extension durable outbox reported a collection gap",
+            );
+            event.event_id = gap_id;
+            event.source_sequence = last_source_sequence;
+            event
+        }
+    };
     Ok(LocalApiRequest {
         request_id: Uuid::now_v7(),
         protocol_version: LOCAL_API_VERSION,
@@ -155,10 +222,10 @@ fn is_absolute_windows_path(value: &str) -> bool {
 }
 
 fn self_check() -> Result<()> {
-    let message = fixture_message();
+    let message = fixture_message(None);
     let mut framed = Vec::new();
     write_frame(&mut framed, &message)?;
-    let decoded: BrowserDownloadMessage = read_frame(&mut framed.as_slice())?;
+    let decoded: BrowserMessage = read_frame(&mut framed.as_slice())?;
     let request = request_from_browser(decoded)?;
     assert!(matches!(
         request.command,
@@ -168,8 +235,8 @@ fn self_check() -> Result<()> {
     Ok(())
 }
 
-fn agent_self_check() -> Result<()> {
-    let request = request_from_browser(fixture_message())?;
+fn agent_self_check(final_path: Option<&str>) -> Result<()> {
+    let request = request_from_browser(fixture_message(final_path))?;
     let mut pipe = NamedPipeClient::connect_current_user(5_000)
         .context("connect to the current-user context agent")?;
     write_frame(&mut pipe, &request)?;
@@ -190,14 +257,18 @@ fn agent_self_check() -> Result<()> {
     Ok(())
 }
 
-fn fixture_message() -> BrowserDownloadMessage {
-    BrowserDownloadMessage {
+fn fixture_message(final_path: Option<&str>) -> BrowserMessage {
+    BrowserMessage::DownloadCompleted {
         protocol_version: LOCAL_API_VERSION,
         browser: "edge".into(),
+        browser_download_id: 42,
+        source_sequence: 7,
         download_id: Uuid::now_v7(),
         url: "https://example.test/context-layer.pdf".into(),
         referrer: Some("https://example.test/".into()),
-        final_path: r"C:\Users\Example\Downloads\context-layer.pdf".into(),
+        final_path: final_path
+            .unwrap_or(r"C:\Users\Example\Downloads\context-layer.pdf")
+            .into(),
         observed_at: OffsetDateTime::now_utc(),
     }
 }
@@ -206,10 +277,12 @@ fn fixture_message() -> BrowserDownloadMessage {
 mod tests {
     use super::*;
 
-    fn message(url: &str) -> BrowserDownloadMessage {
-        BrowserDownloadMessage {
+    fn message(url: &str) -> BrowserMessage {
+        BrowserMessage::DownloadCompleted {
             protocol_version: LOCAL_API_VERSION,
             browser: "edge".into(),
+            browser_download_id: 42,
+            source_sequence: 7,
             download_id: Uuid::now_v7(),
             url: url.into(),
             referrer: None,
@@ -236,5 +309,52 @@ mod tests {
     #[test]
     fn malformed_web_urls_are_rejected() {
         assert!(request_from_browser(message("https:missing-host")).is_err());
+    }
+
+    #[test]
+    fn retrying_a_download_uses_the_download_uuid_as_event_id() {
+        let message = message("https://example.test/report.pdf");
+        let BrowserMessage::DownloadCompleted { download_id, .. } = &message else {
+            unreachable!();
+        };
+        let expected = *download_id;
+        let request = request_from_browser(message).unwrap();
+        let LocalApiCommand::SubmitEvent { event } = request.command else {
+            unreachable!();
+        };
+        assert_eq!(event.event_id, expected);
+    }
+
+    #[test]
+    fn browser_outbox_gap_becomes_a_collector_gap_event() {
+        let request = request_from_browser(BrowserMessage::CollectorGap {
+            protocol_version: LOCAL_API_VERSION,
+            browser: "chromium".into(),
+            gap_id: Uuid::now_v7(),
+            last_source_sequence: Some(99),
+            reason: "outbox capacity exceeded".into(),
+            observed_at: OffsetDateTime::now_utc(),
+        })
+        .unwrap();
+        let LocalApiCommand::SubmitEvent { event } = request.command else {
+            unreachable!();
+        };
+        assert!(matches!(event.payload, EventPayload::CollectorGap { .. }));
+        assert_eq!(event.source_sequence, Some(99));
+    }
+
+    #[test]
+    fn checked_in_browser_fixture_is_accepted_by_the_native_host() {
+        let fixture = include_str!("../../../schemas/browser/v1/download_completed.json");
+        let message: BrowserMessage = serde_json::from_str(fixture).unwrap();
+        let request = request_from_browser(message).unwrap();
+        let LocalApiCommand::SubmitEvent { event } = request.command else {
+            unreachable!();
+        };
+        assert_eq!(
+            event.event_id,
+            Uuid::parse_str("018bcfe5-6800-7000-8000-000000000001").unwrap()
+        );
+        assert_eq!(event.source_sequence, Some(7));
     }
 }

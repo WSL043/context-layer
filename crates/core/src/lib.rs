@@ -16,6 +16,7 @@ pub enum ProjectionCommand {
     UpsertArtifactLocation {
         identity: FileIdentity,
         path: String,
+        scope_id: String,
         observed_at: OffsetDateTime,
         change: FileChange,
         source_event_id: Uuid,
@@ -57,6 +58,7 @@ pub fn project_event(event: &EventEnvelope) -> Vec<ProjectionCommand> {
         } => vec![ProjectionCommand::UpsertArtifactLocation {
             identity: identity.clone(),
             path: path.clone(),
+            scope_id: event.scope_id.0.clone(),
             observed_at: event.observed_at,
             change: *change,
             source_event_id: event.event_id,

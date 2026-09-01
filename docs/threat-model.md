@@ -21,6 +21,8 @@ File locations, URLs, task names, inferred relationships, exclusion rules, raw e
 - explicit path/app/domain scopes before collection;
 - length-delimited, size-limited, typed IPC messages;
 - Native Messaging requires an exact allowlisted extension origin and validates URL scheme/host and absolute Windows paths;
+- browser delivery retries use stable event UUIDs; a 256-message outbox limit produces an explicit collector gap instead of silent loss;
+- reconciliation never treats an unreadable subtree as deleted and does not follow Windows reparse points;
 - append-only evidence with detector version and status;
 - UI has no database access;
 - sensitive logs omit document content and URLs by default;

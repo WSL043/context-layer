@@ -9,6 +9,15 @@ permissions:
   contents: read
 
 jobs:
+  extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: node --check apps/browser-extension/service-worker.js
+      - run: node --check apps/browser-extension/protocol.js
+      - run: node --test apps/browser-extension/tests/*.test.mjs
+      - run: node -e "JSON.parse(require('fs').readFileSync('apps/browser-extension/manifest.json'))"
+
   rust:
     strategy:
       fail-fast: false

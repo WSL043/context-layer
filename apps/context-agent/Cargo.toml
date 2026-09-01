@@ -12,5 +12,6 @@ context-core.workspace = true
 context-local-ipc.workspace = true
 context-platform-windows.workspace = true
 context-storage-sqlite.workspace = true
+ctrlc.workspace = true
 time.workspace = true
 uuid.workspace = true

@@ -27,6 +27,12 @@ pub struct SqliteRepository {
     connection: Connection,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActiveLocation {
+    pub identity: FileIdentity,
+    pub path: String,
+}
+
 impl SqliteRepository {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let connection = Connection::open(path)?;
@@ -48,6 +54,86 @@ impl SqliteRepository {
         Ok(self
             .connection
             .query_row("SELECT COUNT(*) FROM raw_event", [], |row| row.get(0))?)
+    }
+
+    pub fn last_source_sequence(
+        &self,
+        source: &str,
+        scope_id: &str,
+    ) -> Result<Option<u64>, StorageError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT last_sequence FROM collector_checkpoint
+                 WHERE source = ?1 AND scope_id = ?2",
+                params![source, scope_id],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn collector_reconciliation_required(
+        &self,
+        source: &str,
+        scope_id: &str,
+    ) -> Result<bool, StorageError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT reconciliation_required FROM collector_checkpoint
+                 WHERE source = ?1 AND scope_id = ?2",
+                params![source, scope_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .optional()?
+            .unwrap_or(false))
+    }
+
+    pub fn mark_collector_reconciled(
+        &mut self,
+        source: &str,
+        scope_id: &str,
+        last_sequence: u64,
+    ) -> Result<(), StorageError> {
+        self.connection.execute(
+            "INSERT INTO collector_checkpoint (
+               source, scope_id, last_sequence, reconciliation_required, updated_at
+             ) VALUES (?1, ?2, ?3, 0, ?4)
+             ON CONFLICT(source, scope_id) DO UPDATE SET
+               last_sequence = MAX(last_sequence, excluded.last_sequence),
+               reconciliation_required = 0,
+               updated_at = excluded.updated_at",
+            params![
+                source,
+                scope_id,
+                last_sequence,
+                format_time(OffsetDateTime::now_utc())?
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn active_locations_in_scope(
+        &self,
+        scope_id: &str,
+    ) -> Result<Vec<ActiveLocation>, StorageError> {
+        let mut statement = self.connection.prepare(
+            "SELECT a.identity_provider, a.identity_namespace, a.identity_opaque, l.path
+             FROM location l
+             JOIN artifact a ON a.artifact_id = l.artifact_id
+             WHERE l.active = 1 AND l.scope_id = ?1",
+        )?;
+        let rows = statement.query_map([scope_id], |row| {
+            Ok(ActiveLocation {
+                identity: FileIdentity {
+                    provider: row.get(0)?,
+                    namespace: row.get(1)?,
+                    opaque_id: row.get(2)?,
+                },
+                path: row.get(3)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub fn artifact_count(&self) -> Result<u64, StorageError> {
@@ -112,6 +198,31 @@ impl EventRepository for SqliteRepository {
                 serde_json::to_string(event)?,
             ],
         )?;
+
+        if let Some(sequence) = event.source_sequence {
+            let requires_reconciliation = matches!(
+                event.payload,
+                context_contracts::EventPayload::CollectorGap { .. }
+            );
+            tx.execute(
+                "INSERT INTO collector_checkpoint (
+                    source, scope_id, last_sequence, reconciliation_required, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(source, scope_id) DO UPDATE SET
+                   last_sequence = MAX(last_sequence, excluded.last_sequence),
+                   reconciliation_required = MAX(
+                     reconciliation_required, excluded.reconciliation_required
+                   ),
+                   updated_at = excluded.updated_at",
+                params![
+                    event.source.0,
+                    event.scope_id.0,
+                    sequence,
+                    requires_reconciliation,
+                    format_time(event.ingested_at)?,
+                ],
+            )?;
+        }
 
         if inserted == 0 {
             tx.commit()?;
@@ -230,10 +341,31 @@ fn apply_command(tx: &Transaction<'_>, command: &ProjectionCommand) -> Result<()
         ProjectionCommand::UpsertArtifactLocation {
             identity,
             path,
+            scope_id,
             observed_at,
             change,
             source_event_id,
         } => {
+            if matches!(change, context_contracts::FileChange::Deleted) {
+                if let Some(artifact_id) = find_artifact(tx, identity)? {
+                    tx.execute(
+                        "UPDATE location SET
+                           active = 0,
+                           observed_at = ?3,
+                           last_change = ?4,
+                           source_event_id = ?5
+                         WHERE artifact_id = ?1 AND path = ?2",
+                        params![
+                            artifact_id.to_string(),
+                            path,
+                            format_time(*observed_at)?,
+                            serde_json::to_string(change)?,
+                            source_event_id.to_string(),
+                        ],
+                    )?;
+                }
+                return Ok(());
+            }
             let artifact_id = get_or_create_artifact(tx, identity)?;
             tx.execute(
                 "UPDATE location SET active = 0 WHERE artifact_id = ?1",
@@ -241,9 +373,10 @@ fn apply_command(tx: &Transaction<'_>, command: &ProjectionCommand) -> Result<()
             )?;
             tx.execute(
                 "INSERT INTO location (
-                    artifact_id, path, observed_at, active, last_change, source_event_id
-                 ) VALUES (?1, ?2, ?3, 1, ?4, ?5)
+                    artifact_id, path, scope_id, observed_at, active, last_change, source_event_id
+                 ) VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6)
                  ON CONFLICT(artifact_id, path) DO UPDATE SET
+                   scope_id = excluded.scope_id,
                    observed_at = excluded.observed_at,
                    active = 1,
                    last_change = excluded.last_change,
@@ -251,6 +384,7 @@ fn apply_command(tx: &Transaction<'_>, command: &ProjectionCommand) -> Result<()
                 params![
                     artifact_id.to_string(),
                     path,
+                    scope_id,
                     format_time(*observed_at)?,
                     serde_json::to_string(change)?,
                     source_event_id.to_string(),
@@ -324,18 +458,8 @@ fn get_or_create_artifact(
     tx: &Transaction<'_>,
     identity: &FileIdentity,
 ) -> Result<Uuid, StorageError> {
-    let existing = tx
-        .query_row(
-            "SELECT artifact_id FROM artifact
-             WHERE identity_provider = ?1
-               AND identity_namespace = ?2
-               AND identity_opaque = ?3",
-            params![identity.provider, identity.namespace, identity.opaque_id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?;
-    if let Some(value) = existing {
-        return Ok(Uuid::parse_str(&value).expect("database artifact IDs are generated UUIDs"));
+    if let Some(existing) = find_artifact(tx, identity)? {
+        return Ok(existing);
     }
 
     let artifact_id = Uuid::now_v7();
@@ -353,11 +477,30 @@ fn get_or_create_artifact(
     Ok(artifact_id)
 }
 
+fn find_artifact(
+    tx: &Transaction<'_>,
+    identity: &FileIdentity,
+) -> Result<Option<Uuid>, StorageError> {
+    let existing = tx
+        .query_row(
+            "SELECT artifact_id FROM artifact
+             WHERE identity_provider = ?1
+               AND identity_namespace = ?2
+               AND identity_opaque = ?3",
+            params![identity.provider, identity.namespace, identity.opaque_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    existing
+        .map(|value| Uuid::parse_str(&value).map_err(StorageError::InvalidUuid))
+        .transpose()
+}
+
 fn format_time(value: OffsetDateTime) -> Result<String, time::error::Format> {
     value.format(&Rfc3339)
 }
 
-const CURRENT_DATABASE_VERSION: u32 = 1;
+const CURRENT_DATABASE_VERSION: u32 = 2;
 
 fn migrate(connection: &mut Connection) -> Result<(), StorageError> {
     let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -367,9 +510,17 @@ fn migrate(connection: &mut Connection) -> Result<(), StorageError> {
             supported: CURRENT_DATABASE_VERSION,
         });
     }
+    let mut version = version;
     if version == 0 {
         let tx = connection.transaction()?;
         tx.execute_batch(SCHEMA_V1)?;
+        tx.pragma_update(None, "user_version", 1)?;
+        tx.commit()?;
+        version = 1;
+    }
+    if version == 1 {
+        let tx = connection.transaction()?;
+        tx.execute_batch(SCHEMA_V2)?;
         tx.pragma_update(None, "user_version", CURRENT_DATABASE_VERSION)?;
         tx.commit()?;
     }
@@ -445,6 +596,27 @@ CREATE TABLE IF NOT EXISTS collector_gap (
   last_sequence INTEGER,
   reason TEXT NOT NULL,
   observed_at TEXT NOT NULL
+);
+"#;
+
+const SCHEMA_V2: &str = r#"
+ALTER TABLE location ADD COLUMN scope_id TEXT NOT NULL DEFAULT '';
+
+UPDATE location
+SET scope_id = COALESCE(
+  (SELECT raw_event.scope_id
+   FROM raw_event
+   WHERE raw_event.event_id = location.source_event_id),
+  ''
+);
+
+CREATE TABLE collector_checkpoint (
+  source TEXT NOT NULL,
+  scope_id TEXT NOT NULL,
+  last_sequence INTEGER NOT NULL,
+  reconciliation_required INTEGER NOT NULL CHECK(reconciliation_required IN (0, 1)),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(source, scope_id)
 );
 "#;
 
@@ -667,6 +839,140 @@ mod tests {
         assert_eq!(
             engine.repository().observed_download_edge_count().unwrap(),
             0
+        );
+    }
+
+    #[test]
+    fn source_checkpoint_and_gap_state_are_committed_with_events() {
+        let repository = SqliteRepository::in_memory().unwrap();
+        let mut engine = ContextEngine::new(repository);
+        let mut first = observed(EventPayload::TaskStarted {
+            task_id: Uuid::now_v7(),
+            name: "checkpoint".into(),
+        });
+        first.source_sequence = Some(7);
+        engine.ingest(&first).unwrap();
+        assert_eq!(
+            engine
+                .repository()
+                .last_source_sequence("test.collector", "scope.test")
+                .unwrap(),
+            Some(7)
+        );
+
+        let mut gap = observed(EventPayload::CollectorGap {
+            collector: "test.collector".into(),
+            last_sequence: Some(7),
+            reason: "fixture overflow".into(),
+        });
+        gap.source_sequence = Some(8);
+        engine.ingest(&gap).unwrap();
+        assert!(
+            engine
+                .repository()
+                .collector_reconciliation_required("test.collector", "scope.test")
+                .unwrap()
+        );
+
+        engine
+            .repository_mut()
+            .mark_collector_reconciled("test.collector", "scope.test", 8)
+            .unwrap();
+        assert!(
+            !engine
+                .repository()
+                .collector_reconciliation_required("test.collector", "scope.test")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn deleted_file_deactivates_the_location_without_recreating_it() {
+        let repository = SqliteRepository::in_memory().unwrap();
+        let mut engine = ContextEngine::new(repository);
+        let file_identity = identity();
+        let created = observed(EventPayload::FileObserved {
+            identity: file_identity.clone(),
+            path: r"C:\work\deleted.txt".into(),
+            change: FileChange::Created,
+        });
+        let deleted = observed(EventPayload::FileObserved {
+            identity: file_identity.clone(),
+            path: r"C:\work\deleted.txt".into(),
+            change: FileChange::Deleted,
+        });
+
+        engine.ingest(&created).unwrap();
+        engine.ingest(&deleted).unwrap();
+
+        assert_eq!(
+            engine
+                .repository()
+                .active_location_for(&file_identity)
+                .unwrap(),
+            None
+        );
+        assert!(
+            engine
+                .repository()
+                .active_locations_in_scope("scope.test")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn version_one_database_is_migrated_forward() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(SCHEMA_V1).unwrap();
+        connection
+            .execute(
+                "INSERT INTO raw_event (
+                   event_id, schema_version, source, observed_at, ingested_at,
+                   scope_id, sensitivity, envelope_json
+                 ) VALUES ('event-1', 1, 'fixture', '2026-09-01T00:00:00Z',
+                           '2026-09-01T00:00:00Z', 'scope.migrated', 'metadata', '{}')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO artifact (
+                   artifact_id, identity_provider, identity_namespace, identity_opaque
+                 ) VALUES ('artifact-1', 'fixture', 'volume', X'01')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO location (
+                   artifact_id, path, observed_at, active, last_change, source_event_id
+                 ) VALUES ('artifact-1', 'C:\\migrated.txt', '2026-09-01T00:00:00Z',
+                           1, 'created', 'event-1')",
+                [],
+            )
+            .unwrap();
+        connection.pragma_update(None, "user_version", 1).unwrap();
+
+        let repository = SqliteRepository::from_connection(connection).unwrap();
+        let version: u32 = repository
+            .connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(version, CURRENT_DATABASE_VERSION);
+        assert_eq!(
+            repository
+                .last_source_sequence("missing", "missing")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            repository
+                .active_locations_in_scope("scope.migrated")
+                .unwrap()
+                .len(),
+            1
         );
     }
 }
