@@ -1,0 +1,32 @@
+[workspace]
+members = [
+  "apps/context-agent",
+  "crates/contracts",
+  "crates/core",
+  "crates/platform-windows",
+  "crates/storage-sqlite",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0-alpha.0"
+edition = "2024"
+license = "Apache-2.0"
+rust-version = "1.85"
+
+[workspace.dependencies]
+anyhow = "1.0"
+context-contracts = { path = "crates/contracts" }
+context-core = { path = "crates/core" }
+context-platform-windows = { path = "crates/platform-windows" }
+context-storage-sqlite = { path = "crates/storage-sqlite" }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
+uuid = { version = "1.18", features = ["serde", "v7"] }
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
