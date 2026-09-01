@@ -1,0 +1,9 @@
+{
+  "name": "com.contextlayer.browser",
+  "description": "Context Layer browser event bridge",
+  "path": "${NATIVE_HOST_PATH}",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://${EXTENSION_ID}/"
+  ]
+}

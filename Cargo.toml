@@ -1,8 +1,10 @@
 [workspace]
 members = [
   "apps/context-agent",
+  "apps/context-native-host",
   "crates/contracts",
   "crates/core",
+  "crates/local-ipc",
   "crates/platform-windows",
   "crates/storage-sqlite",
 ]
@@ -18,6 +20,7 @@ rust-version = "1.85"
 anyhow = "1.0"
 context-contracts = { path = "crates/contracts" }
 context-core = { path = "crates/core" }
+context-local-ipc = { path = "crates/local-ipc" }
 context-platform-windows = { path = "crates/platform-windows" }
 context-storage-sqlite = { path = "crates/storage-sqlite" }
 rusqlite = { version = "0.37", features = ["bundled"] }
@@ -26,6 +29,7 @@ serde_json = "1.0"
 thiserror = "2.0"
 time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
 uuid = { version = "1.18", features = ["serde", "v7"] }
+url = "2.5"
 
 [profile.release]
 lto = "thin"
