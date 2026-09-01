@@ -57,8 +57,10 @@ pub struct DirectoryBatch {
     pub gap_detected: bool,
 }
 
+#[cfg(any(windows, test))]
 const CHANGE_HEADER_BYTES: usize = 12;
 
+#[cfg(any(windows, test))]
 fn parse_change_buffer(buffer: &[u8], bytes_returned: usize) -> io::Result<DirectoryBatch> {
     if bytes_returned == 0 {
         return Ok(DirectoryBatch {
