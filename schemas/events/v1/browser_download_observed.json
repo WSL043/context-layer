@@ -1,0 +1,23 @@
+{
+  "event_id": "018bcfe5-6800-7000-8000-000000000001",
+  "schema_version": 1,
+  "source": "browser.edge",
+  "source_sequence": 42,
+  "observed_at": "2023-11-14T22:13:20Z",
+  "ingested_at": "2023-11-14T22:13:21Z",
+  "scope_id": "scope.downloads",
+  "correlation_id": null,
+  "sensitivity": "metadata",
+  "payload": {
+    "type": "browser_download_observed",
+    "download_id": "018bcfe5-6800-7000-8000-000000000002",
+    "url": "https://example.test/report.pdf",
+    "referrer": "https://example.test/",
+    "final_path": "C:\\Users\\Example\\Downloads\\report.pdf"
+  },
+  "evidence": {
+    "kind": "observed",
+    "collector": "edge-extension",
+    "detail": "downloads API"
+  }
+}

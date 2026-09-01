@@ -1,0 +1,14 @@
+[package]
+name = "context-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+context-contracts.workspace = true
+context-core.workspace = true
+context-storage-sqlite.workspace = true
+time.workspace = true
+uuid.workspace = true
