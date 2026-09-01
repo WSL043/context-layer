@@ -1,0 +1,12 @@
+{
+  "type": "download_completed",
+  "protocol_version": 1,
+  "browser": "chromium",
+  "browser_download_id": 42,
+  "source_sequence": 7,
+  "download_id": "018bcfe5-6800-7000-8000-000000000001",
+  "url": "https://cdn.example.test/report.pdf",
+  "referrer": "https://example.test/",
+  "final_path": "C:\\Users\\Example\\Downloads\\report.pdf",
+  "observed_at": "2026-09-01T00:00:00Z"
+}

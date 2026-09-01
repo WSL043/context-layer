@@ -23,6 +23,7 @@ context-core = { path = "crates/core" }
 context-local-ipc = { path = "crates/local-ipc" }
 context-platform-windows = { path = "crates/platform-windows" }
 context-storage-sqlite = { path = "crates/storage-sqlite" }
+ctrlc = "3.4"
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
