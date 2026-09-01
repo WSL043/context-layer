@@ -11,11 +11,12 @@ permissions:
 jobs:
   rust:
     strategy:
+      fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: rustup update stable
       - run: rustup component add rustfmt clippy
       - run: cargo fmt --all --check
