@@ -24,7 +24,17 @@ This repository is an architecture-first alpha scaffold. It currently proves the
 - automatic download/file correlation in either arrival order;
 - duplicate replay repair after an interrupted derived projection;
 - forward-only, version-checked SQLite schema migration;
+- content references with separate retrieval classes for normal, sensitive, and secret evidence;
+- a content-addressed local raw vault that stores blobs outside SQLite and deduplicates by SHA-256;
 - architecture decisions and threat model.
+
+## Personal Context v2 direction
+
+The next layer expands Context Layer from file/task provenance into a durable local personal-context backbone. Screen/UI capture, browser activity, chat extraction, clipboard history, development tools, and future phone/import collectors are treated as replaceable evidence sources rather than separate memory products.
+
+Raw observations remain durable; semantic interpretation remains rebuildable. Large content stays in the local raw vault and events carry references instead of embedding screenshot/audio/page bytes in SQLite. Capture policy and agent retrieval policy are intentionally separate so broad local retention does not grant every future agent unrestricted access.
+
+The staged architecture and 30-day acceptance target are documented in [`docs/personal-context-v2.md`](docs/personal-context-v2.md).
 
 ## Dependency direction
 
@@ -80,6 +90,8 @@ cargo run -p context-native-host -- --agent-self-check
 ## Non-goals for the first foundation release
 
 No cloud account, sync, Windows service, kernel driver, screen capture, automatic file moves, automatic task switching, plugin marketplace, or administrator-only baseline.
+
+Screen capture remains outside the first foundation release itself; Personal Context v2 will integrate it behind a replaceable collector/backend boundary rather than coupling the core to one capture implementation.
 
 `apps/browser-extension` is an unpacked contract alpha. It is not registered in
 the browser by build or test commands; registration belongs to the per-user
