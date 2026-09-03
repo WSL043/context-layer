@@ -8,6 +8,4 @@ rust-version.workspace = true
 [dependencies]
 sha2.workspace = true
 thiserror.workspace = true
-
-[dev-dependencies]
 uuid.workspace = true
