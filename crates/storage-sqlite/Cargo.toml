@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[lib]
+path = "src/v2_lib.rs"
+
 [dependencies]
 context-contracts.workspace = true
 context-core.workspace = true
