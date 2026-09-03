@@ -45,6 +45,24 @@ pub enum SensitivityClass {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum RetrievalClass {
+    Normal,
+    Sensitive,
+    Secret,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContentRef {
+    pub sha256: String,
+    pub media_type: String,
+    pub byte_length: u64,
+    pub compression: Option<String>,
+    pub storage_class: String,
+    pub retrieval_class: RetrievalClass,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FileChange {
     Created,
     Modified,
@@ -70,6 +88,10 @@ pub enum EventPayload {
         url: String,
         referrer: Option<String>,
         final_path: String,
+    },
+    ContentObserved {
+        content_kind: String,
+        refs: Vec<ContentRef>,
     },
     DownloadMatched {
         download_id: Uuid,
@@ -185,6 +207,35 @@ mod tests {
         assert_eq!(decoded, event);
         assert!(json.contains("browser_download_observed"));
         assert!(json.contains("downloads API"));
+    }
+
+    #[test]
+    fn content_reference_round_trips_without_embedding_blob_bytes() {
+        let event = EventEnvelope::observed(
+            "screenpipe.local",
+            "scope.personal",
+            OffsetDateTime::from_unix_timestamp(1_700_000_001).unwrap(),
+            EventPayload::ContentObserved {
+                content_kind: "ui.screenshot".into(),
+                refs: vec![ContentRef {
+                    sha256: "a".repeat(64),
+                    media_type: "image/png".into(),
+                    byte_length: 1024,
+                    compression: None,
+                    storage_class: "local_vault".into(),
+                    retrieval_class: RetrievalClass::Sensitive,
+                }],
+            },
+            "screenpipe-adapter",
+            "content-addressed screenshot reference",
+        );
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("content_observed"));
+        assert!(json.contains("local_vault"));
+        assert!(!json.contains("PNG"));
+        let decoded: EventEnvelope = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, event);
     }
 
     #[test]
