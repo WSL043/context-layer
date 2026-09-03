@@ -132,13 +132,15 @@ pub trait EventRepository {
         commands: &[ProjectionCommand],
     ) -> Result<IngestOutcome, Self::Error>;
 
-    fn append_raw_v2(&mut self, event: &EventEnvelopeV2) -> Result<IngestOutcome, Self::Error>;
-
     fn find_download_match(
         &self,
         path: &str,
         tolerance_seconds: i64,
     ) -> Result<Option<DownloadMatchCandidate>, Self::Error>;
+}
+
+pub trait RawEventRepository: EventRepository {
+    fn append_raw_v2(&mut self, event: &EventEnvelopeV2) -> Result<IngestOutcome, Self::Error>;
 }
 
 #[derive(Debug, Error)]
@@ -236,6 +238,20 @@ impl<R: EventRepository> ContextEngine<R> {
         })
     }
 
+    pub fn repository(&self) -> &R {
+        &self.repository
+    }
+
+    pub fn repository_mut(&mut self) -> &mut R {
+        &mut self.repository
+    }
+
+    pub fn into_repository(self) -> R {
+        self.repository
+    }
+}
+
+impl<R: RawEventRepository> ContextEngine<R> {
     pub fn ingest_v2(
         &mut self,
         event: &EventEnvelopeV2,
@@ -261,17 +277,5 @@ impl<R: EventRepository> ContextEngine<R> {
             outcome,
             derived_event_ids: Vec::new(),
         })
-    }
-
-    pub fn repository(&self) -> &R {
-        &self.repository
-    }
-
-    pub fn repository_mut(&mut self) -> &mut R {
-        &mut self.repository
-    }
-
-    pub fn into_repository(self) -> R {
-        self.repository
     }
 }
