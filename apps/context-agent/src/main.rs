@@ -311,7 +311,6 @@ mod tests {
         let mut engine = ContextEngine::new(repository);
         let event = EventEnvelopeV2::observed(
             "ui.window_focused",
-            7,
             "windows.foreground",
             "scope.personal",
             OffsetDateTime::now_utc(),
