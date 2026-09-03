@@ -6,6 +6,7 @@ use std::{
 
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use uuid::Uuid;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredContent {
@@ -54,7 +55,7 @@ impl ContentVault {
         let parent = final_path.parent().expect("digest path always has a parent");
         fs::create_dir_all(parent)?;
 
-        let temp_path = parent.join(format!(".{}.tmp-{}", sha256, std::process::id()));
+        let temp_path = parent.join(format!(".{sha256}.tmp-{}", Uuid::now_v7()));
         let mut temp = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -65,7 +66,7 @@ impl ContentVault {
 
         match fs::rename(&temp_path, &final_path) {
             Ok(()) => {}
-            Err(error) if final_path.exists() => {
+            Err(_) if final_path.exists() => {
                 let _ = fs::remove_file(&temp_path);
                 return Ok(StoredContent {
                     sha256,
@@ -119,8 +120,6 @@ fn hex_sha256(bytes: &[u8]) -> String {
 mod tests {
     use std::fs;
 
-    use uuid::Uuid;
-
     use super::*;
 
     fn temp_vault_root() -> PathBuf {
@@ -141,6 +140,19 @@ mod tests {
         assert_eq!(fs::read(&first.path).unwrap(), b"personal context");
         assert!(first.path.starts_with(&root));
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_style_replay_gets_same_content_path() {
+        let root = temp_vault_root();
+        let vault = ContentVault::open(&root).unwrap();
+
+        let first = vault.put_bytes(b"same bytes").unwrap();
+        let replay = vault.put_bytes(b"same bytes").unwrap();
+
+        assert_eq!(first.path, replay.path);
+        assert!(replay.duplicate);
         fs::remove_dir_all(root).unwrap();
     }
 
