@@ -41,8 +41,11 @@ The envelope and payload evolve independently.
 - `payload_version` versions only that event payload.
 - Unknown event types or newer payload versions must remain storable as raw evidence even if no projection understands them yet.
 - Projection code must opt into event types/versions it understands; unsupported events are retained, not rejected.
+- A binary must reject an envelope version it does not understand; forward retention is guaranteed inside the v2 envelope, not across unknown future envelope shapes.
 
 The existing strongly typed Rust payloads remain useful for built-in collectors. They should be treated as typed views over the durable raw envelope rather than the only form that can cross the ingest boundary forever.
+
+The first v2 implementation deliberately keeps complete v2 envelopes in the canonical `raw_event` timeline. It does not create ad-hoc indexing tables outside the normal database migration system. Event-type/time indexes and semantic projections should be introduced later through explicit versioned migrations when query workloads exist to justify them.
 
 ## Time model
 
@@ -53,6 +56,8 @@ Personal context needs three clocks:
 - `ingested_at`: when Context Layer durably accepted it.
 
 For live local events these may be nearly identical. Imported chat history, notifications, delayed browser delivery, sleep/resume and cross-device imports make the distinction necessary.
+
+`ingested_at` is stamped at the trusted Context Layer ingest boundary. Collectors may report occurrence and observation time, but they cannot authoritatively choose the durable-ingest time stored as evidence.
 
 ## Raw content vault
 
