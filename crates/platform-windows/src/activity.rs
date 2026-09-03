@@ -50,10 +50,8 @@ pub fn foreground_activity() -> io::Result<Option<ForegroundActivity>> {
         } else {
             let mut buffer = vec![0u16; 32_768];
             let mut length = buffer.len() as u32;
-            let succeeded =
-                QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &mut length);
-            let close_result = CloseHandle(handle);
-            debug_assert_ne!(close_result, 0);
+            let succeeded = QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &mut length);
+            let _ = CloseHandle(handle);
             if succeeded == 0 {
                 None
             } else {
