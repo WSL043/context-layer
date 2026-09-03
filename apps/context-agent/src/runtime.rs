@@ -9,6 +9,7 @@ use anyhow::{Context, Result, anyhow};
 use context_contracts::{EventEnvelopeV2, LocalApiRequest, LocalApiResponse};
 use context_local_ipc::{NamedPipeServer, read_frame, write_frame};
 use context_platform_windows::{DirectoryWatcher, WatchCancellation, WatchOutcome};
+#[cfg(windows)]
 use time::OffsetDateTime;
 
 use crate::{collector::CollectorState, handle_request};
@@ -122,10 +123,7 @@ fn spawn_watcher(
 }
 
 #[cfg(windows)]
-fn spawn_personal_activity(
-    cancellation: WatchCancellation,
-    events: Sender<RuntimeEvent>,
-) {
+fn spawn_personal_activity(cancellation: WatchCancellation, events: Sender<RuntimeEvent>) {
     thread::spawn(move || {
         let mut sampler = personal::PersonalActivitySampler::new();
         loop {
@@ -149,11 +147,7 @@ fn spawn_personal_activity(
 }
 
 #[cfg(not(windows))]
-fn spawn_personal_activity(
-    _cancellation: WatchCancellation,
-    _events: Sender<RuntimeEvent>,
-) {
-}
+fn spawn_personal_activity(_cancellation: WatchCancellation, _events: Sender<RuntimeEvent>) {}
 
 fn spawn_ipc(
     first_server: NamedPipeServer,
