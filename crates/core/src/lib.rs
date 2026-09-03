@@ -76,6 +76,7 @@ pub fn project_event(event: &EventEnvelope) -> Vec<ProjectionCommand> {
             observed_at: event.observed_at,
             source_event_id: event.event_id,
         }],
+        EventPayload::ContentObserved { .. } => Vec::new(),
         EventPayload::DownloadMatched {
             download_id,
             identity,
