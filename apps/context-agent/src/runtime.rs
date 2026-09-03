@@ -59,7 +59,7 @@ fn event_loop(
     max_batches: Option<usize>,
 ) -> Result<()> {
     let mut completed_batches = 0usize;
-    let mut personal_events = 0usize;
+    let personal_events = std::cell::Cell::new(0usize);
     loop {
         if cancellation.is_cancelled()? {
             break;
@@ -94,7 +94,7 @@ fn event_loop(
             #[cfg(windows)]
             RuntimeEvent::Personal(event) => {
                 state.engine_mut().ingest_v2(&event)?;
-                personal_events += 1;
+                personal_events.set(personal_events.get() + 1);
             }
             RuntimeEvent::Api { request, response } => {
                 let reply = handle_request(state.engine_mut(), request);
@@ -104,7 +104,8 @@ fn event_loop(
         }
     }
     println!(
-        "agent stopped: watcher_batches={completed_batches}; personal_events={personal_events}; last_sequence={}",
+        "agent stopped: watcher_batches={completed_batches}; personal_events={}; last_sequence={}",
+        personal_events.get(),
         state.last_sequence()
     );
     Ok(())
