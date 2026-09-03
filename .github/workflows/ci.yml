@@ -32,3 +32,26 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --all-features
       - run: git diff --exit-code Cargo.lock
+
+  refresh-lockfile:
+    if: github.event_name == 'pull_request' && github.head_ref == 'personal-context-v2-foundation'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+      - run: rustup update stable
+      - run: cargo generate-lockfile
+      - name: Commit regenerated lockfile when needed
+        shell: bash
+        run: |
+          if git diff --quiet -- Cargo.lock; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.lock
+          git commit -m "build: update Cargo.lock"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
