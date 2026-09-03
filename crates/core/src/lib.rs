@@ -1,6 +1,6 @@
 use context_contracts::{
-    CURRENT_SCHEMA_VERSION, EventEnvelope, EventPayload, EvidenceDescriptor, EvidenceKind,
-    FileChange, FileIdentity, SensitivityClass, SourceId,
+    CURRENT_ENVELOPE_VERSION, CURRENT_SCHEMA_VERSION, EventEnvelope, EventEnvelopeV2, EventPayload,
+    EvidenceDescriptor, EvidenceKind, FileChange, FileIdentity, SensitivityClass, SourceId,
 };
 use thiserror::Error;
 use time::OffsetDateTime;
@@ -132,6 +132,8 @@ pub trait EventRepository {
         commands: &[ProjectionCommand],
     ) -> Result<IngestOutcome, Self::Error>;
 
+    fn append_raw_v2(&mut self, event: &EventEnvelopeV2) -> Result<IngestOutcome, Self::Error>;
+
     fn find_download_match(
         &self,
         path: &str,
@@ -143,6 +145,12 @@ pub trait EventRepository {
 pub enum IngestError<E: std::error::Error + 'static> {
     #[error("unsupported event schema version {actual}; current version is {expected}")]
     UnsupportedSchema { actual: u16, expected: u16 },
+    #[error("unsupported event envelope version {actual}; expected {expected}")]
+    UnsupportedEnvelopeVersion { actual: u16, expected: u16 },
+    #[error("event type must not be empty")]
+    EmptyEventType,
+    #[error("payload version must be greater than zero")]
+    InvalidPayloadVersion,
     #[error("repository failed: {0}")]
     Repository(#[source] E),
 }
@@ -225,6 +233,33 @@ impl<R: EventRepository> ContextEngine<R> {
         Ok(IngestReport {
             outcome,
             derived_event_ids: vec![derived.event_id],
+        })
+    }
+
+    pub fn ingest_v2(
+        &mut self,
+        event: &EventEnvelopeV2,
+    ) -> Result<IngestReport, IngestError<R::Error>> {
+        if event.envelope_version != CURRENT_ENVELOPE_VERSION {
+            return Err(IngestError::UnsupportedEnvelopeVersion {
+                actual: event.envelope_version,
+                expected: CURRENT_ENVELOPE_VERSION,
+            });
+        }
+        if event.event_type.trim().is_empty() {
+            return Err(IngestError::EmptyEventType);
+        }
+        if event.payload_version == 0 {
+            return Err(IngestError::InvalidPayloadVersion);
+        }
+
+        let outcome = self
+            .repository
+            .append_raw_v2(event)
+            .map_err(IngestError::Repository)?;
+        Ok(IngestReport {
+            outcome,
+            derived_event_ids: Vec::new(),
         })
     }
 
