@@ -52,7 +52,9 @@ impl ContentVault {
             });
         }
 
-        let parent = final_path.parent().expect("digest path always has a parent");
+        let parent = final_path
+            .parent()
+            .expect("digest path always has a parent");
         fs::create_dir_all(parent)?;
 
         let temp_path = parent.join(format!(".{sha256}.tmp-{}", Uuid::now_v7()));
