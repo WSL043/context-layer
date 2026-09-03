@@ -6,11 +6,15 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
-use context_contracts::{LocalApiRequest, LocalApiResponse};
+use context_contracts::{EventEnvelopeV2, LocalApiRequest, LocalApiResponse};
 use context_local_ipc::{NamedPipeServer, read_frame, write_frame};
 use context_platform_windows::{DirectoryWatcher, WatchCancellation, WatchOutcome};
+use time::OffsetDateTime;
 
 use crate::{collector::CollectorState, handle_request};
+
+#[path = "personal.rs"]
+mod personal;
 
 pub fn run(root: PathBuf, database_path: PathBuf, max_batches: Option<usize>) -> Result<()> {
     let mut state = CollectorState::open(root, database_path)?;
@@ -23,6 +27,7 @@ pub fn run(root: PathBuf, database_path: PathBuf, max_batches: Option<usize>) ->
     let (events_tx, events_rx) = mpsc::channel();
 
     spawn_watcher(watcher, cancellation.clone(), events_tx.clone());
+    spawn_personal_activity(cancellation.clone(), events_tx.clone());
     spawn_ipc(pipe_server, cancellation.clone(), events_tx);
     if max_batches.is_none() {
         let signal = cancellation.clone();
@@ -50,6 +55,7 @@ fn event_loop(
     max_batches: Option<usize>,
 ) -> Result<()> {
     let mut completed_batches = 0usize;
+    let mut personal_events = 0usize;
     loop {
         if cancellation.is_cancelled()? {
             break;
@@ -81,6 +87,10 @@ fn event_loop(
                     break;
                 }
             }
+            RuntimeEvent::Personal(event) => {
+                state.engine_mut().ingest_v2(&event)?;
+                personal_events += 1;
+            }
             RuntimeEvent::Api { request, response } => {
                 let reply = handle_request(state.engine_mut(), request);
                 let _ = response.send(reply);
@@ -89,7 +99,7 @@ fn event_loop(
         }
     }
     println!(
-        "agent stopped: watcher_batches={completed_batches}; last_sequence={}",
+        "agent stopped: watcher_batches={completed_batches}; personal_events={personal_events}; last_sequence={}",
         state.last_sequence()
     );
     Ok(())
@@ -109,6 +119,40 @@ fn spawn_watcher(
             }
         }
     });
+}
+
+#[cfg(windows)]
+fn spawn_personal_activity(
+    cancellation: WatchCancellation,
+    events: Sender<RuntimeEvent>,
+) {
+    thread::spawn(move || {
+        let mut sampler = personal::PersonalActivitySampler::new();
+        loop {
+            if cancellation.is_cancelled().unwrap_or(true) {
+                break;
+            }
+
+            let poll = sampler.poll(OffsetDateTime::now_utc());
+            for diagnostic in poll.diagnostics {
+                eprintln!("personal activity collector: {diagnostic}");
+            }
+            for event in poll.events {
+                if events.send(RuntimeEvent::Personal(event)).is_err() {
+                    return;
+                }
+            }
+
+            thread::sleep(Duration::from_secs(1));
+        }
+    });
+}
+
+#[cfg(not(windows))]
+fn spawn_personal_activity(
+    _cancellation: WatchCancellation,
+    _events: Sender<RuntimeEvent>,
+) {
 }
 
 fn spawn_ipc(
@@ -184,6 +228,7 @@ fn spawn_ipc(
 
 enum RuntimeEvent {
     Watch(std::io::Result<WatchOutcome>),
+    Personal(EventEnvelopeV2),
     Api {
         request: LocalApiRequest,
         response: Sender<LocalApiResponse>,
