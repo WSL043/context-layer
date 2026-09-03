@@ -70,8 +70,9 @@ impl PersonalActivitySampler {
             Err(error) => {
                 let message = error.to_string();
                 if self.foreground_error.as_deref() != Some(message.as_str()) {
-                    poll.diagnostics
-                        .push(format!("windows foreground activity sampling failed: {message}"));
+                    poll.diagnostics.push(format!(
+                        "windows foreground activity sampling failed: {message}"
+                    ));
                     self.foreground_error = Some(message);
                 }
             }
@@ -193,7 +194,9 @@ mod tests {
             window_title: "Same document".into(),
         };
 
-        let first = sampler.observe_foreground(Some(activity.clone()), at(1)).unwrap();
+        let first = sampler
+            .observe_foreground(Some(activity.clone()), at(1))
+            .unwrap();
         assert_eq!(first.event_type, "ui.foreground_changed");
         assert!(
             sampler
@@ -203,11 +206,7 @@ mod tests {
 
         let mut changed = activity;
         changed.window_title = "Different document".into();
-        assert!(
-            sampler
-                .observe_foreground(Some(changed), at(3))
-                .is_some()
-        );
+        assert!(sampler.observe_foreground(Some(changed), at(3)).is_some());
     }
 
     #[test]
