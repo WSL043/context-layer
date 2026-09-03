@@ -1,9 +1,9 @@
 use std::{env, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
-use context_contracts::{EventEnvelope, EventPayload, FileChange};
 #[cfg(test)]
 use context_contracts::EventEnvelopeV2;
+use context_contracts::{EventEnvelope, EventPayload, FileChange};
 use context_contracts::{
     LOCAL_API_VERSION, LocalApiCommand, LocalApiRequest, LocalApiResponse, LocalApiResult,
 };
