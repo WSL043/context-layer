@@ -71,6 +71,7 @@ dependencies = [
  "context-platform-windows",
  "context-storage-sqlite",
  "ctrlc",
+ "serde_json",
  "time",
  "uuid",
 ]
