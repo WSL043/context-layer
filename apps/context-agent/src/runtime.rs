@@ -6,7 +6,9 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
-use context_contracts::{EventEnvelopeV2, LocalApiRequest, LocalApiResponse};
+#[cfg(windows)]
+use context_contracts::EventEnvelopeV2;
+use context_contracts::{LocalApiRequest, LocalApiResponse};
 use context_local_ipc::{NamedPipeServer, read_frame, write_frame};
 use context_platform_windows::{DirectoryWatcher, WatchCancellation, WatchOutcome};
 #[cfg(windows)]
@@ -14,6 +16,7 @@ use time::OffsetDateTime;
 
 use crate::{collector::CollectorState, handle_request};
 
+#[cfg(windows)]
 #[path = "personal.rs"]
 mod personal;
 
@@ -88,6 +91,7 @@ fn event_loop(
                     break;
                 }
             }
+            #[cfg(windows)]
             RuntimeEvent::Personal(event) => {
                 state.engine_mut().ingest_v2(&event)?;
                 personal_events += 1;
@@ -136,7 +140,10 @@ fn spawn_personal_activity(cancellation: WatchCancellation, events: Sender<Runti
                 eprintln!("personal activity collector: {diagnostic}");
             }
             for event in poll.events {
-                if events.send(RuntimeEvent::Personal(event)).is_err() {
+                if events
+                    .send(RuntimeEvent::Personal(Box::new(event)))
+                    .is_err()
+                {
                     return;
                 }
             }
@@ -222,7 +229,8 @@ fn spawn_ipc(
 
 enum RuntimeEvent {
     Watch(std::io::Result<WatchOutcome>),
-    Personal(EventEnvelopeV2),
+    #[cfg(windows)]
+    Personal(Box<EventEnvelopeV2>),
     Api {
         request: LocalApiRequest,
         response: Sender<LocalApiResponse>,
