@@ -138,7 +138,6 @@ mod tests {
         let observed_at = OffsetDateTime::from_unix_timestamp(1_700_000_120).unwrap();
         let mut event = EventEnvelopeV2::observed(
             "wechat.message",
-            99,
             "wechat.ui-parser",
             "scope.personal",
             observed_at,
@@ -146,6 +145,7 @@ mod tests {
             "wechat-parser-v0",
             "opaque storage fixture",
         );
+        event.payload_version = 99;
         event.occurred_at = Some(occurred_at);
         event.source_sequence = Some(11);
 
