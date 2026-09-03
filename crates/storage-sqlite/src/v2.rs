@@ -28,11 +28,11 @@ fn ensure_v2_schema(connection: &Connection) -> Result<(), StorageError> {
 impl SqliteRepository {
     pub fn raw_v2_event_count(&self) -> Result<u64, StorageError> {
         ensure_v2_schema(&self.connection)?;
-        Ok(self.connection.query_row(
-            "SELECT COUNT(*) FROM raw_event_v2_metadata",
-            [],
-            |row| row.get(0),
-        )?)
+        Ok(self
+            .connection
+            .query_row("SELECT COUNT(*) FROM raw_event_v2_metadata", [], |row| {
+                row.get(0)
+            })?)
     }
 
     pub fn raw_event_envelope_json(&self, event_id: Uuid) -> Result<Option<String>, StorageError> {
