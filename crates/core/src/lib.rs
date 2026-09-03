@@ -1,6 +1,6 @@
 use context_contracts::{
-    CURRENT_SCHEMA_VERSION, EventEnvelope, EventPayload, EvidenceDescriptor, EvidenceKind,
-    FileChange, FileIdentity, SensitivityClass, SourceId,
+    CURRENT_ENVELOPE_VERSION, CURRENT_SCHEMA_VERSION, EventEnvelope, EventEnvelopeV2, EventPayload,
+    EvidenceDescriptor, EvidenceKind, FileChange, FileIdentity, SensitivityClass, SourceId,
 };
 use thiserror::Error;
 use time::OffsetDateTime;
@@ -139,10 +139,20 @@ pub trait EventRepository {
     ) -> Result<Option<DownloadMatchCandidate>, Self::Error>;
 }
 
+pub trait RawEventRepository: EventRepository {
+    fn append_raw_v2(&mut self, event: &EventEnvelopeV2) -> Result<IngestOutcome, Self::Error>;
+}
+
 #[derive(Debug, Error)]
 pub enum IngestError<E: std::error::Error + 'static> {
     #[error("unsupported event schema version {actual}; current version is {expected}")]
     UnsupportedSchema { actual: u16, expected: u16 },
+    #[error("unsupported event envelope version {actual}; expected {expected}")]
+    UnsupportedEnvelopeVersion { actual: u16, expected: u16 },
+    #[error("event type must not be empty")]
+    EmptyEventType,
+    #[error("payload version must be greater than zero")]
+    InvalidPayloadVersion,
     #[error("repository failed: {0}")]
     Repository(#[source] E),
 }
@@ -238,5 +248,38 @@ impl<R: EventRepository> ContextEngine<R> {
 
     pub fn into_repository(self) -> R {
         self.repository
+    }
+}
+
+impl<R: RawEventRepository> ContextEngine<R> {
+    pub fn ingest_v2(
+        &mut self,
+        event: &EventEnvelopeV2,
+    ) -> Result<IngestReport, IngestError<R::Error>> {
+        if event.envelope_version != CURRENT_ENVELOPE_VERSION {
+            return Err(IngestError::UnsupportedEnvelopeVersion {
+                actual: event.envelope_version,
+                expected: CURRENT_ENVELOPE_VERSION,
+            });
+        }
+        if event.event_type.trim().is_empty() {
+            return Err(IngestError::EmptyEventType);
+        }
+        if event.payload_version == 0 {
+            return Err(IngestError::InvalidPayloadVersion);
+        }
+
+        // `ingested_at` is Context Layer evidence, not collector-provided evidence.
+        // Always stamp it at the trusted ingest boundary before durable storage.
+        let mut durable_event = event.clone();
+        durable_event.ingested_at = OffsetDateTime::now_utc();
+        let outcome = self
+            .repository
+            .append_raw_v2(&durable_event)
+            .map_err(IngestError::Repository)?;
+        Ok(IngestReport {
+            outcome,
+            derived_event_ids: Vec::new(),
+        })
     }
 }

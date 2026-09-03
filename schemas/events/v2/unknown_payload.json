@@ -1,0 +1,28 @@
+{
+  "event_id": "018c4a15-6f80-7000-8000-000000000001",
+  "envelope_version": 2,
+  "event_type": "future.collector.observation",
+  "payload_version": 42,
+  "source": "future.collector",
+  "source_sequence": 17,
+  "occurred_at": "2026-09-03T08:00:00Z",
+  "observed_at": "2026-09-03T08:00:05Z",
+  "ingested_at": "2026-09-03T08:00:06Z",
+  "device_id": "desktop-primary",
+  "scope_id": "scope.personal",
+  "correlation_id": null,
+  "sensitivity": "metadata",
+  "content_refs": [],
+  "payload": {
+    "unknown_field": "must survive",
+    "nested": {
+      "future": true,
+      "version": 42
+    }
+  },
+  "evidence": {
+    "kind": "observed",
+    "collector": "future-collector-v42",
+    "detail": "compatibility fixture"
+  }
+}

@@ -1,6 +1,8 @@
 use std::{env, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
+#[cfg(test)]
+use context_contracts::EventEnvelopeV2;
 use context_contracts::{EventEnvelope, EventPayload, FileChange};
 use context_contracts::{
     LOCAL_API_VERSION, LocalApiCommand, LocalApiRequest, LocalApiResponse, LocalApiResult,
@@ -282,6 +284,16 @@ fn handle_request(
                     message: error.to_string(),
                 },
             },
+            LocalApiCommand::SubmitEventV2 { event } => match engine.ingest_v2(&event) {
+                Ok(report) => LocalApiResult::EventAccepted {
+                    event_id: event.event_id,
+                    duplicate: report.outcome == IngestOutcome::Duplicate,
+                },
+                Err(error) => LocalApiResult::Error {
+                    code: "ingest_failed".into(),
+                    message: error.to_string(),
+                },
+            },
         }
     };
     LocalApiResponse {
@@ -294,6 +306,43 @@ fn handle_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn submit_v2_event_request_is_retained_and_acknowledged() {
+        let repository = SqliteRepository::in_memory().unwrap();
+        let mut engine = ContextEngine::new(repository);
+        let event = EventEnvelopeV2::observed(
+            "ui.window_focused",
+            "windows.foreground",
+            "scope.personal",
+            OffsetDateTime::now_utc(),
+            serde_json::json!({"process": "notepad.exe", "future": true}),
+            "foreground-v0",
+            "fixture",
+        );
+        let event_id = event.event_id;
+        let request_id = Uuid::now_v7();
+        let response = handle_request(
+            &mut engine,
+            LocalApiRequest {
+                request_id,
+                protocol_version: LOCAL_API_VERSION,
+                command: LocalApiCommand::SubmitEventV2 {
+                    event: Box::new(event),
+                },
+            },
+        );
+
+        assert_eq!(response.request_id, request_id);
+        assert!(matches!(
+            response.result,
+            LocalApiResult::EventAccepted {
+                event_id: accepted,
+                duplicate: false
+            } if accepted == event_id
+        ));
+        assert_eq!(engine.repository().raw_v2_event_count().unwrap(), 1);
+    }
 
     #[test]
     fn submit_event_request_is_ingested_and_acknowledged() {

@@ -15,3 +15,6 @@ context-storage-sqlite.workspace = true
 ctrlc.workspace = true
 time.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
