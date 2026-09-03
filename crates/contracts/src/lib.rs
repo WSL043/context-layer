@@ -195,9 +195,10 @@ pub struct EventEnvelopeV2 {
 }
 
 impl EventEnvelopeV2 {
+    /// Creates a live observed event at payload version 1. Collectors that emit a
+    /// later payload version set `payload_version` explicitly after construction.
     pub fn observed(
         event_type: impl Into<String>,
-        payload_version: u16,
         source: impl Into<String>,
         scope_id: impl Into<String>,
         observed_at: OffsetDateTime,
@@ -209,7 +210,7 @@ impl EventEnvelopeV2 {
             event_id: Uuid::now_v7(),
             envelope_version: CURRENT_ENVELOPE_VERSION,
             event_type: event_type.into(),
-            payload_version,
+            payload_version: 1,
             source: SourceId(source.into()),
             source_sequence: None,
             occurred_at: None,
@@ -325,7 +326,6 @@ mod tests {
         let observed_at = OffsetDateTime::from_unix_timestamp(1_700_000_120).unwrap();
         let mut event = EventEnvelopeV2::observed(
             "wechat.message",
-            99,
             "wechat.ui-parser",
             "scope.personal",
             observed_at,
@@ -337,6 +337,7 @@ mod tests {
             "wechat-parser-v0",
             "opaque payload fixture",
         );
+        event.payload_version = 99;
         event.occurred_at = Some(occurred_at);
         event.device_id = Some("desktop-primary".into());
         event.sensitivity = SensitivityClass::Sensitive;
@@ -399,7 +400,6 @@ mod tests {
     fn local_api_can_carry_v2_events() {
         let event = EventEnvelopeV2::observed(
             "ui.window_focused",
-            1,
             "windows.foreground",
             "scope.personal",
             OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap(),
