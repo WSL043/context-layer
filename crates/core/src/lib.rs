@@ -269,9 +269,13 @@ impl<R: RawEventRepository> ContextEngine<R> {
             return Err(IngestError::InvalidPayloadVersion);
         }
 
+        // `ingested_at` is Context Layer evidence, not collector-provided evidence.
+        // Always stamp it at the trusted ingest boundary before durable storage.
+        let mut durable_event = event.clone();
+        durable_event.ingested_at = OffsetDateTime::now_utc();
         let outcome = self
             .repository
-            .append_raw_v2(event)
+            .append_raw_v2(&durable_event)
             .map_err(IngestError::Repository)?;
         Ok(IngestReport {
             outcome,
