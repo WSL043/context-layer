@@ -10,6 +10,8 @@ use crate::retrieval::RetrievalGrant;
 pub struct RawEventLookup {
     pub event_id: Uuid,
     pub schema_version: u16,
+    pub scope_id: ScopeId,
+    pub sensitivity: SensitivityClass,
     pub envelope_json: String,
 }
 
@@ -35,11 +37,8 @@ pub enum ContentAccessError<E: std::error::Error + 'static> {
     UnsupportedVersion { event_id: Uuid, version: u16 },
     #[error("raw event {event_id} could not be decoded: {message}")]
     MalformedRawEvent { event_id: Uuid, message: String },
-    #[error("raw event row {row_event_id} contains envelope event id {envelope_event_id}")]
-    EventIdMismatch {
-        row_event_id: Uuid,
-        envelope_event_id: Uuid,
-    },
+    #[error("raw event {event_id} envelope metadata does not match indexed raw-event columns")]
+    EnvelopeMetadataMismatch { event_id: Uuid },
 }
 
 pub struct ContentAccessEngine<'a, R> {
@@ -51,17 +50,22 @@ impl<'a, R: RawEventLookupRepository> ContentAccessEngine<'a, R> {
         Self { repository }
     }
 
-    /// Returns `Ok(None)` for every ordinary authorization miss: unknown event,
-    /// event sensitivity outside the grant, unreferenced digest, or reference
-    /// retrieval class outside the grant. Callers can therefore expose one
-    /// generic "not authorized" result without turning the raw store into an
-    /// existence oracle.
-    pub fn authorize_reference(
+    /// Returns `Ok(None)` for ordinary authorization misses: unknown event,
+    /// unauthorized scope, event sensitivity outside the grant, unreferenced
+    /// digest, or reference retrieval class outside the grant. Scope and event
+    /// sensitivity are checked from indexed raw-row metadata before parsing the
+    /// envelope, so an unauthorized caller cannot distinguish malformed content
+    /// in a scope it cannot read.
+    pub fn authorize_reference<F>(
         &self,
         event_id: Uuid,
         sha256: &str,
         grant: RetrievalGrant,
-    ) -> Result<Option<AuthorizedContentRef>, ContentAccessError<R::Error>> {
+        scope_allowed: F,
+    ) -> Result<Option<AuthorizedContentRef>, ContentAccessError<R::Error>>
+    where
+        F: FnOnce(&ScopeId) -> bool,
+    {
         let Some(raw) = self
             .repository
             .raw_event_by_id(event_id)
@@ -69,6 +73,12 @@ impl<'a, R: RawEventLookupRepository> ContentAccessEngine<'a, R> {
         else {
             return Ok(None);
         };
+
+        if !scope_allowed(&raw.scope_id)
+            || !event_sensitivity_allowed(raw.sensitivity, grant.max_event_sensitivity)
+        {
+            return Ok(None);
+        }
 
         let (scope_id, event_sensitivity, refs, envelope_event_id) = match raw.schema_version {
             1 => {
@@ -113,14 +123,11 @@ impl<'a, R: RawEventLookupRepository> ContentAccessEngine<'a, R> {
             }
         };
 
-        if envelope_event_id != raw.event_id {
-            return Err(ContentAccessError::EventIdMismatch {
-                row_event_id: raw.event_id,
-                envelope_event_id,
-            });
-        }
-        if !event_sensitivity_allowed(event_sensitivity, grant.max_event_sensitivity) {
-            return Ok(None);
+        if envelope_event_id != raw.event_id
+            || scope_id != raw.scope_id
+            || event_sensitivity != raw.sensitivity
+        {
+            return Err(ContentAccessError::EnvelopeMetadataMismatch { event_id });
         }
 
         let Some(reference) = refs.into_iter().find(|reference| reference.sha256 == sha256) else {
@@ -170,9 +177,7 @@ const fn retrieval_rank(value: context_contracts::RetrievalClass) -> u8 {
 mod tests {
     use std::{collections::HashMap, convert::Infallible};
 
-    use context_contracts::{
-        EvidenceDescriptor, EvidenceKind, RetrievalClass, SourceId,
-    };
+    use context_contracts::{EvidenceDescriptor, EvidenceKind, RetrievalClass, SourceId};
     use serde_json::json;
     use time::OffsetDateTime;
 
@@ -207,6 +212,7 @@ mod tests {
         refs: Vec<ContentRef>,
     ) -> RawEventLookup {
         let observed_at = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+        let scope_id = ScopeId("scope.personal".into());
         let event = EventEnvelopeV2 {
             event_id,
             envelope_version: 2,
@@ -218,7 +224,7 @@ mod tests {
             observed_at,
             ingested_at: observed_at,
             device_id: None,
-            scope_id: ScopeId("scope.personal".into()),
+            scope_id: scope_id.clone(),
             correlation_id: None,
             sensitivity,
             content_refs: refs,
@@ -232,6 +238,8 @@ mod tests {
         RawEventLookup {
             event_id,
             schema_version: 2,
+            scope_id,
+            sensitivity,
             envelope_json: serde_json::to_string(&event).unwrap(),
         }
     }
@@ -273,13 +281,23 @@ mod tests {
 
         assert!(
             access
-                .authorize_reference(event_a, &shared_elsewhere.sha256, sensitive_grant())
+                .authorize_reference(
+                    event_a,
+                    &shared_elsewhere.sha256,
+                    sensitive_grant(),
+                    |_| true,
+                )
                 .unwrap()
                 .is_none()
         );
         assert!(
             access
-                .authorize_reference(event_b, &shared_elsewhere.sha256, sensitive_grant())
+                .authorize_reference(
+                    event_b,
+                    &shared_elsewhere.sha256,
+                    sensitive_grant(),
+                    |_| true,
+                )
                 .unwrap()
                 .is_some()
         );
@@ -299,15 +317,49 @@ mod tests {
 
         assert!(
             access
-                .authorize_reference(event_id, &secret.sha256, RetrievalGrant::metadata_only())
+                .authorize_reference(
+                    event_id,
+                    &secret.sha256,
+                    RetrievalGrant::metadata_only(),
+                    |_| true,
+                )
                 .unwrap()
                 .is_none()
         );
         assert!(
             access
-                .authorize_reference(event_id, &secret.sha256, sensitive_grant())
+                .authorize_reference(
+                    event_id,
+                    &secret.sha256,
+                    sensitive_grant(),
+                    |_| true,
+                )
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn unauthorized_scope_is_rejected_before_malformed_envelope_is_parsed() {
+        let event_id = Uuid::now_v7();
+        let repository = FakeRepository {
+            rows: HashMap::from([(
+                event_id,
+                RawEventLookup {
+                    event_id,
+                    schema_version: 2,
+                    scope_id: ScopeId("scope.other".into()),
+                    sensitivity: SensitivityClass::Sensitive,
+                    envelope_json: "{ definitely not valid json".into(),
+                },
+            )]),
+        };
+
+        let result = ContentAccessEngine::new(&repository)
+            .authorize_reference(event_id, &"d".repeat(64), sensitive_grant(), |scope| {
+                scope.0 == "scope.personal"
+            })
+            .unwrap();
+        assert!(result.is_none());
     }
 }
