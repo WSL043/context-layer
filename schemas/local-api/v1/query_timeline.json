@@ -1,0 +1,15 @@
+{
+  "request_id": "018c4a15-6f80-7000-8000-000000000101",
+  "protocol_version": 1,
+  "command": {
+    "type": "query_timeline",
+    "authorization": "0123456789abcdef0123456789abcdef0123456789abcdef",
+    "query": {
+      "scope_id": "scope.personal",
+      "start_at": "2026-09-04T00:00:00Z",
+      "end_at": "2026-09-05T00:00:00Z",
+      "before": null,
+      "limit": 10
+    }
+  }
+}
