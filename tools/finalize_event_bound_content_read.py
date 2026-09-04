@@ -7,13 +7,14 @@ if "pub mod content_access;" not in text:
     text = text.replace("pub mod retrieval;", "pub mod content_access;\npub mod retrieval;", 1)
 path.write_text(text, encoding="utf-8")
 
-# SQLite module export.
+# SQLite module export. `use uuid::Uuid` also appears in tests, so only the
+# first top-level import is the anchor.
 path = Path("crates/storage-sqlite/src/lib.rs")
 text = path.read_text(encoding="utf-8")
 if "mod content_access;" not in text:
     anchor = "use uuid::Uuid;\n"
-    if text.count(anchor) != 1:
-        raise SystemExit("storage import anchor mismatch")
+    if anchor not in text:
+        raise SystemExit("storage import anchor missing")
     text = text.replace(anchor, anchor + "\nmod content_access;\n", 1)
 path.write_text(text, encoding="utf-8")
 
@@ -99,7 +100,11 @@ text = text.replace(
     1,
 )
 if "use context_content_vault::ContentVault;" not in text:
-    text = text.replace("use anyhow::{Context, Result, bail};", "use anyhow::{Context, Result, bail};\nuse context_content_vault::ContentVault;", 1)
+    text = text.replace(
+        "use anyhow::{Context, Result, bail};",
+        "use anyhow::{Context, Result, bail};\nuse context_content_vault::ContentVault;",
+        1,
+    )
 if "mod content_read;" not in text:
     text = text.replace("mod collector;", "mod collector;\nmod content_read;", 1)
 if "fn open_content_vault_for_database" not in text:
@@ -110,12 +115,11 @@ if "fn open_content_vault_for_database" not in text:
     text = text.replace(anchor, helper + anchor, 1)
 serve_old = '''    let mut engine = ContextEngine::new(repository);\n    let server = NamedPipeServer::bind_current_user().context("bind current-user named pipe")?;'''
 serve_new = '''    let mut engine = ContextEngine::new(repository);\n    let content_vault = open_content_vault_for_database(&database_path)?;\n    let server = NamedPipeServer::bind_current_user().context("bind current-user named pipe")?;'''
-# Only replace occurrence inside serve_once; first occurrence after helper.
 serve_idx = text.find("fn serve_once(database_path: PathBuf)")
 if serve_idx == -1:
     raise SystemExit("serve_once missing")
 head, tail = text[:serve_idx], text[serve_idx:]
-if "let content_vault = open_content_vault_for_database" not in tail.split("fn handle_request",1)[0]:
+if "let content_vault = open_content_vault_for_database" not in tail.split("fn handle_request", 1)[0]:
     if serve_old not in tail:
         raise SystemExit("serve engine anchor mismatch")
     tail = tail.replace(serve_old, serve_new, 1)
@@ -137,8 +141,10 @@ if "LocalApiCommand::ReadTextContent" not in text:
     if text.count(arm_anchor) != 1:
         raise SystemExit("QueryTimeline dispatch anchor mismatch")
     text = text.replace(arm_anchor, arm_new, 1)
-# Unit test call sites do not need vault for ingest tests.
-text = text.replace("handle_request(\n            &mut engine,\n            LocalApiRequest", "handle_request(\n            &mut engine,\n            None,\n            LocalApiRequest")
+text = text.replace(
+    "handle_request(\n            &mut engine,\n            LocalApiRequest",
+    "handle_request(\n            &mut engine,\n            None,\n            LocalApiRequest",
+)
 path.write_text(text, encoding="utf-8")
 
 # Runtime passes its already-open vault to API dispatch.
