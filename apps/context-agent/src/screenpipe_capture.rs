@@ -1,7 +1,7 @@
 use anyhow::{Result, ensure};
 use context_content_vault::ContentVault;
 use context_contracts::{ContentRef, EventEnvelopeV2, RetrievalClass, SensitivityClass};
-use context_screenpipe_adapter::{ScreenTextSource, ScreenpipeFrame};
+use context_screenpipe_adapter::ScreenpipeFrame;
 use serde_json::{Value, json};
 use time::OffsetDateTime;
 
@@ -30,13 +30,14 @@ pub fn event_from_frame(
         "omitted_too_large"
     } else {
         let stored = vault.put_bytes(frame.text.as_bytes())?;
+        let sha256 = stored.sha256;
         roles.push(json!({
             "role": "screen_text",
-            "sha256": stored.sha256,
+            "sha256": &sha256,
             "source": frame.text_source.as_str(),
         }));
         refs.push(ContentRef {
-            sha256: stored.sha256,
+            sha256,
             media_type: "text/plain; charset=utf-8".into(),
             byte_length: stored.byte_length,
             compression: None,
@@ -53,12 +54,13 @@ pub fn event_from_frame(
                 "Screenpipe frame body was not a PNG"
             );
             let stored = vault.put_bytes(&bytes)?;
+            let sha256 = stored.sha256;
             roles.push(json!({
                 "role": "screenshot",
-                "sha256": stored.sha256,
+                "sha256": &sha256,
             }));
             refs.push(ContentRef {
-                sha256: stored.sha256,
+                sha256,
                 media_type: "image/png".into(),
                 byte_length: stored.byte_length,
                 compression: None,
@@ -102,7 +104,7 @@ pub fn event_from_frame(
 mod tests {
     use std::fs;
 
-    use context_screenpipe_adapter::ScreenpipeFrame;
+    use context_screenpipe_adapter::{ScreenTextSource, ScreenpipeFrame};
     use uuid::Uuid;
 
     use super::*;
