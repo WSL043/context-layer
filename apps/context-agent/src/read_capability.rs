@@ -27,6 +27,7 @@ pub(crate) struct ReadCapabilityPolicy {
     token: Box<str>,
     allowed_scopes: HashSet<String>,
     grant: RetrievalGrant,
+    allow_text_content: bool,
 }
 
 impl ReadCapabilityPolicy {
@@ -50,13 +51,16 @@ impl ReadCapabilityPolicy {
             ));
         }
 
-        let grant = match profile.as_deref().unwrap_or("metadata") {
-            "metadata" => RetrievalGrant::metadata_only(),
-            "sensitive" => RetrievalGrant {
-                max_event_sensitivity: SensitivityClass::Sensitive,
-                max_content_retrieval: RetrievalClass::Sensitive,
-                include_payload: true,
-            },
+        let (grant, allow_text_content) = match profile.as_deref().unwrap_or("metadata") {
+            "metadata" => (RetrievalGrant::metadata_only(), false),
+            "sensitive" => (
+                RetrievalGrant {
+                    max_event_sensitivity: SensitivityClass::Sensitive,
+                    max_content_retrieval: RetrievalClass::Sensitive,
+                    include_payload: true,
+                },
+                true,
+            ),
             other => {
                 return Err(format!(
                     "unsupported {READ_PROFILE_ENV} value {other:?}; expected metadata or sensitive"
@@ -84,15 +88,22 @@ impl ReadCapabilityPolicy {
             token: token.into_boxed_str(),
             allowed_scopes,
             grant,
+            allow_text_content,
         }))
     }
 
     #[cfg(test)]
-    pub(crate) fn for_test(token: &str, scopes: &[&str], grant: RetrievalGrant) -> Self {
+    pub(crate) fn for_test(
+        token: &str,
+        scopes: &[&str],
+        grant: RetrievalGrant,
+        allow_text_content: bool,
+    ) -> Self {
         Self {
             token: token.into(),
             allowed_scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
             grant,
+            allow_text_content,
         }
     }
 
@@ -102,6 +113,10 @@ impl ReadCapabilityPolicy {
 
     pub(crate) fn scope_allowed(&self, scope_id: &ScopeId) -> bool {
         self.allowed_scopes.contains(&scope_id.0)
+    }
+
+    pub(crate) fn text_content_allowed(&self) -> bool {
+        self.allow_text_content
     }
 
     fn authorize(&self, token: &ReadCapabilityToken, scope_id: &ScopeId) -> Option<RetrievalGrant> {
@@ -338,6 +353,7 @@ mod tests {
             TOKEN,
             &["scope.personal"],
             RetrievalGrant::metadata_only(),
+            false,
         );
         assert!(
             policy
@@ -385,6 +401,7 @@ mod tests {
             TOKEN,
             &["scope.personal"],
             RetrievalGrant::metadata_only(),
+            false,
         );
         let page = query_timeline_with_policy(
             engine.repository(),
@@ -420,6 +437,7 @@ mod tests {
                 max_content_retrieval: RetrievalClass::Sensitive,
                 include_payload: true,
             },
+            true,
         );
         let page = query_timeline_with_policy(
             engine.repository(),
@@ -460,6 +478,7 @@ mod tests {
                 max_content_retrieval: RetrievalClass::Sensitive,
                 include_payload: true,
             },
+            true,
         );
         let page = query_timeline_with_policy(
             engine.repository(),

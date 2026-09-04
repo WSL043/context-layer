@@ -72,6 +72,9 @@ fn read_text_content_with_policy(
     let Some(grant) = policy.grant_for_token(authorization) else {
         return Err(ContentReadError::NotAuthorized);
     };
+    if !policy.text_content_allowed() {
+        return Err(ContentReadError::NotAuthorized);
+    }
     if !is_lowercase_sha256(sha256) {
         return Err(ContentReadError::NotAuthorized);
     }
@@ -169,6 +172,7 @@ mod tests {
                 max_content_retrieval: RetrievalClass::Sensitive,
                 include_payload: true,
             },
+            true,
         )
     }
 
@@ -185,6 +189,45 @@ mod tests {
         event.sensitivity = SensitivityClass::Sensitive;
         event.content_refs.push(reference);
         event
+    }
+
+    #[test]
+    fn metadata_profile_never_reads_raw_text_bytes() {
+        let (root, vault) = temp_vault();
+        let stored = vault.put_bytes(b"normal raw content").unwrap();
+        let reference = ContentRef {
+            sha256: stored.sha256.clone(),
+            media_type: "text/plain; charset=utf-8".into(),
+            byte_length: stored.byte_length,
+            compression: None,
+            storage_class: "local_vault".into(),
+            retrieval_class: RetrievalClass::Normal,
+        };
+        let repository = SqliteRepository::in_memory().unwrap();
+        let mut engine = ContextEngine::new(repository);
+        let mut event = event_with_ref(reference, "scope.personal");
+        event.sensitivity = SensitivityClass::Metadata;
+        engine.ingest_v2(&event).unwrap();
+        let metadata_policy = ReadCapabilityPolicy::for_test(
+            TOKEN,
+            &["scope.personal"],
+            RetrievalGrant::metadata_only(),
+            false,
+        );
+
+        assert_eq!(
+            read_text_content_with_policy(
+                engine.repository(),
+                &vault,
+                &metadata_policy,
+                &ReadCapabilityToken(TOKEN.into()),
+                event.event_id,
+                &stored.sha256,
+            )
+            .unwrap_err(),
+            ContentReadError::NotAuthorized
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
