@@ -61,8 +61,7 @@ pub fn clipboard_snapshot_if_changed(
 
     use windows_sys::Win32::System::{
         DataExchange::{
-            GetClipboardData, GetClipboardSequenceNumber, IsClipboardFormatAvailable,
-            OpenClipboard,
+            GetClipboardData, GetClipboardSequenceNumber, IsClipboardFormatAvailable, OpenClipboard,
         },
         Memory::{GlobalLock, GlobalSize},
         Ole::CF_UNICODETEXT,
@@ -103,6 +102,12 @@ pub fn clipboard_snapshot_if_changed(
             raw_utf16_bytes: raw_size as u64,
         }));
     }
+    if raw_size % std::mem::size_of::<u16>() != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "CF_UNICODETEXT storage had an odd byte length",
+        ));
+    }
 
     let pointer = unsafe { GlobalLock(handle) } as *const u16;
     if pointer.is_null() {
@@ -112,7 +117,10 @@ pub fn clipboard_snapshot_if_changed(
 
     let unit_count = raw_size / std::mem::size_of::<u16>();
     let units = unsafe { slice::from_raw_parts(pointer, unit_count) };
-    let text_end = units.iter().position(|unit| *unit == 0).unwrap_or(unit_count);
+    let text_end = units
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(unit_count);
     let text = String::from_utf16_lossy(&units[..text_end]);
 
     ensure_sequence_stable(sequence, "reading text")?;
