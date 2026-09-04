@@ -32,3 +32,26 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --all-features
       - run: git diff --exit-code Cargo.lock
+
+  normalize-browser-text-interactions:
+    if: github.event_name == 'pull_request' && github.head_ref == 'personal-context-browser-text-interactions'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: personal-context-browser-text-interactions
+      - run: rustup update stable
+      - run: python tools/finalize_browser_text_interactions.py
+      - run: cargo fmt --all
+      - run: cargo generate-lockfile
+      - name: Commit final browser text-interaction shape
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm tools/finalize_browser_text_interactions.py
+          git add -A
+          git commit -m "feat: finalize browser selection and copy provenance"
+          git push origin HEAD:personal-context-browser-text-interactions
