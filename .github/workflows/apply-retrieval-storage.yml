@@ -9,54 +9,22 @@ permissions:
 
 jobs:
   apply:
-    if: github.event.head_commit.message == 'docs: define retrieval boundary'
+    if: github.event.head_commit.message == 'ci: run retrieval migration'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
         with:
           ref: personal-context-retrieval
       - run: rustup update stable
-      - name: Apply versioned retrieval index migration
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path('crates/storage-sqlite/src/lib.rs')
-          text = path.read_text(encoding='utf-8')
-
-          old = 'const CURRENT_DATABASE_VERSION: u32 = 2;'
-          if old not in text:
-              raise SystemExit('database version anchor missing')
-          text = text.replace(old, 'const CURRENT_DATABASE_VERSION: u32 = 3;', 1)
-
-          old = '''    if version == 1 {\n        let tx = connection.transaction()?;\n        tx.execute_batch(SCHEMA_V2)?;\n        tx.pragma_update(None, "user_version", CURRENT_DATABASE_VERSION)?;\n        tx.commit()?;\n    }\n    Ok(())\n}\n'''
-          new = '''    if version == 1 {\n        let tx = connection.transaction()?;\n        tx.execute_batch(SCHEMA_V2)?;\n        tx.pragma_update(None, "user_version", 2)?;\n        tx.commit()?;\n        version = 2;\n    }\n    if version == 2 {\n        let tx = connection.transaction()?;\n        tx.execute_batch(SCHEMA_V3)?;\n        tx.pragma_update(None, "user_version", CURRENT_DATABASE_VERSION)?;\n        tx.commit()?;\n    }\n    Ok(())\n}\n'''
-          if old not in text:
-              raise SystemExit('migration chain anchor missing')
-          text = text.replace(old, new, 1)
-
-          old = '''const SCHEMA_V2: &str = r#"\nALTER TABLE location ADD COLUMN scope_id TEXT NOT NULL DEFAULT '';\n\nUPDATE location\nSET scope_id = COALESCE(\n  (SELECT raw_event.scope_id\n   FROM raw_event\n   WHERE raw_event.event_id = location.source_event_id),\n  ''\n);\n\nCREATE TABLE collector_checkpoint (\n  source TEXT NOT NULL,\n  scope_id TEXT NOT NULL,\n  last_sequence INTEGER NOT NULL,\n  reconciliation_required INTEGER NOT NULL CHECK(reconciliation_required IN (0, 1)),\n  updated_at TEXT NOT NULL,\n  PRIMARY KEY(source, scope_id)\n);\n"#;\n'''
-          new = old + '''\nconst SCHEMA_V3: &str = r#"\nCREATE INDEX IF NOT EXISTS raw_event_scope_observed_cursor\nON raw_event(scope_id, observed_at DESC, event_id DESC);\n"#;\n'''
-          if old not in text:
-              raise SystemExit('schema v2 anchor missing')
-          text = text.replace(old, new, 1)
-
-          if '\nmod retrieval;\n' not in text:
-              if '\nmod v2;\n' not in text:
-                  raise SystemExit('v2 module anchor missing')
-              text = text.replace('\nmod v2;\n', '\nmod retrieval;\nmod v2;\n', 1)
-
-          path.write_text(text, encoding='utf-8')
-          PY
+      - run: python tools/apply_retrieval_migration.py
       - run: cargo fmt --all
       - run: cargo generate-lockfile
-      - name: Commit migration and remove one-shot workflow
+      - name: Commit migration and remove staging files
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm .github/workflows/apply-retrieval-storage.yml
+          git rm tools/apply_retrieval_migration.py .github/workflows/apply-retrieval-storage.yml
           git add -A
           git commit -m "feat: add indexed raw timeline retrieval"
           git push origin HEAD:personal-context-retrieval
