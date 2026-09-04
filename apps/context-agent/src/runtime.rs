@@ -154,15 +154,22 @@ fn event_loop(
                 committed,
             } => {
                 let vault = _content_vault.expect("Windows runtime opens the content vault");
-                let event = screenpipe_capture::event_from_frame(
+                let outcome = match screenpipe_capture::event_from_frame(
                     vault,
                     observation.frame,
                     observation.screenshot,
                     observation.observed_at,
-                )?;
-                state.engine_mut().ingest_v2(&event)?;
-                screenpipe_events.set(screenpipe_events.get() + 1);
-                let _ = committed.send(());
+                ) {
+                    Ok(event) => match state.engine_mut().ingest_v2(&event) {
+                        Ok(_) => {
+                            screenpipe_events.set(screenpipe_events.get() + 1);
+                            Ok(())
+                        }
+                        Err(error) => Err(error.to_string()),
+                    },
+                    Err(error) => Err(error.to_string()),
+                };
+                let _ = committed.send(outcome);
             }
             RuntimeEvent::Api { request, response } => {
                 let reply = handle_request(state.engine_mut(), request);
@@ -396,12 +403,22 @@ fn spawn_screenpipe(
                 {
                     return;
                 }
-                if committed_rx.recv_timeout(Duration::from_secs(10)).is_err() {
-                    return;
-                }
-                cursor = Some(next_cursor);
-                if last_error.take().is_some() {
-                    eprintln!("screenpipe adapter: sampling recovered");
+                match committed_rx.recv_timeout(Duration::from_secs(10)) {
+                    Ok(Ok(())) => {
+                        cursor = Some(next_cursor);
+                        if last_error.take().is_some() {
+                            eprintln!("screenpipe adapter: sampling recovered");
+                        }
+                    }
+                    Ok(Err(message)) => {
+                        if last_error.as_deref() != Some(message.as_str()) {
+                            eprintln!("screenpipe adapter: event commit failed: {message}");
+                            last_error = Some(message);
+                        }
+                        batch_failed = true;
+                        break;
+                    }
+                    Err(_) => return,
                 }
             }
             if batch_failed {
@@ -515,7 +532,7 @@ enum RuntimeEvent {
     #[cfg(windows)]
     Screenpipe {
         observation: Box<ScreenpipeObservation>,
-        committed: Sender<()>,
+        committed: Sender<std::result::Result<(), String>>,
     },
     Api {
         request: LocalApiRequest,
