@@ -1,7 +1,5 @@
 use context_content_vault::{ContentVault, VaultError};
-use context_contracts::{
-    LocalTextContent, ReadCapabilityToken, RetrievalClass,
-};
+use context_contracts::{LocalTextContent, ReadCapabilityToken, RetrievalClass};
 use context_core::content_access::ContentAccessEngine;
 use context_storage_sqlite::SqliteRepository;
 use uuid::Uuid;
@@ -40,7 +38,9 @@ impl ContentReadError {
             Self::TooLarge => format!(
                 "text content exceeds the {MAX_TEXT_CONTENT_BYTES}-byte Local API read limit"
             ),
-            Self::Unavailable => "authorized content is unavailable or failed integrity checks".into(),
+            Self::Unavailable => {
+                "authorized content is unavailable or failed integrity checks".into()
+            }
         }
     }
 }
@@ -72,14 +72,11 @@ fn read_text_content_with_policy(
         return Err(ContentReadError::NotAuthorized);
     };
     let authorized = ContentAccessEngine::new(repository)
-        .authorize_reference(event_id, sha256, grant)
+        .authorize_reference(event_id, sha256, grant, |scope| policy.scope_allowed(scope))
         .map_err(|_| ContentReadError::Unavailable)?;
     let Some(authorized) = authorized else {
         return Err(ContentReadError::NotAuthorized);
     };
-    if !policy.scope_allowed(&authorized.scope_id) {
-        return Err(ContentReadError::NotAuthorized);
-    }
 
     let reference = authorized.reference;
     if reference.retrieval_class == RetrievalClass::Secret {
@@ -125,12 +122,13 @@ fn is_utf8_plain_text(media_type: &str) -> bool {
     parts.all(|parameter| {
         let parameter = parameter.trim();
         !parameter.is_empty()
-            && parameter
-                .split_once('=')
-                .is_some_and(|(name, value)| {
-                    name.trim().eq_ignore_ascii_case("charset")
-                        && value.trim().trim_matches('"').eq_ignore_ascii_case("utf-8")
-                })
+            && parameter.split_once('=').is_some_and(|(name, value)| {
+                name.trim().eq_ignore_ascii_case("charset")
+                    && value
+                        .trim()
+                        .trim_matches('"')
+                        .eq_ignore_ascii_case("utf-8")
+            })
     })
 }
 
@@ -138,9 +136,7 @@ fn is_utf8_plain_text(media_type: &str) -> bool {
 mod tests {
     use std::fs;
 
-    use context_contracts::{
-        ContentRef, EventEnvelopeV2, ScopeId, SensitivityClass,
-    };
+    use context_contracts::{ContentRef, EventEnvelopeV2, SensitivityClass};
     use context_core::{ContextEngine, retrieval::RetrievalGrant};
     use serde_json::json;
     use time::OffsetDateTime;
@@ -228,8 +224,14 @@ mod tests {
         };
         let repository = SqliteRepository::in_memory().unwrap();
         let mut engine = ContextEngine::new(repository);
-        let event_a = event_with_ref(make_ref(first.sha256.clone(), first.byte_length), "scope.personal");
-        let event_b = event_with_ref(make_ref(second.sha256.clone(), second.byte_length), "scope.personal");
+        let event_a = event_with_ref(
+            make_ref(first.sha256.clone(), first.byte_length),
+            "scope.personal",
+        );
+        let event_b = event_with_ref(
+            make_ref(second.sha256.clone(), second.byte_length),
+            "scope.personal",
+        );
         engine.ingest_v2(&event_a).unwrap();
         engine.ingest_v2(&event_b).unwrap();
 
