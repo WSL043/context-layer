@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::read_capability::{ReadCapabilityPolicy, environment_read_policy};
 
 const MAX_TEXT_CONTENT_BYTES: usize = 96 * 1024;
+const MAX_MEDIA_TYPE_BYTES: usize = 128;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ContentReadError {
@@ -71,6 +72,9 @@ fn read_text_content_with_policy(
     let Some(grant) = policy.grant_for_token(authorization) else {
         return Err(ContentReadError::NotAuthorized);
     };
+    if !is_lowercase_sha256(sha256) {
+        return Err(ContentReadError::NotAuthorized);
+    }
     let authorized = ContentAccessEngine::new(repository)
         .authorize_reference(event_id, sha256, grant, |scope| policy.scope_allowed(scope))
         .map_err(|_| ContentReadError::Unavailable)?;
@@ -84,6 +88,7 @@ fn read_text_content_with_policy(
     }
     if reference.storage_class != "local_vault"
         || reference.compression.is_some()
+        || reference.media_type.len() > MAX_MEDIA_TYPE_BYTES
         || !is_utf8_plain_text(&reference.media_type)
     {
         return Err(ContentReadError::UnsupportedContent);
@@ -111,6 +116,13 @@ fn read_text_content_with_policy(
     })
 }
 
+fn is_lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 fn is_utf8_plain_text(media_type: &str) -> bool {
     let mut parts = media_type.split(';');
     if !parts
@@ -124,10 +136,7 @@ fn is_utf8_plain_text(media_type: &str) -> bool {
         !parameter.is_empty()
             && parameter.split_once('=').is_some_and(|(name, value)| {
                 name.trim().eq_ignore_ascii_case("charset")
-                    && value
-                        .trim()
-                        .trim_matches('"')
-                        .eq_ignore_ascii_case("utf-8")
+                    && value.trim().trim_matches('"').eq_ignore_ascii_case("utf-8")
             })
     })
 }

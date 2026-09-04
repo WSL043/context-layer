@@ -23,7 +23,7 @@ const MAX_WIRE_PAGE_BYTES: usize = 768 * 1024;
 
 static ENVIRONMENT_POLICY: OnceLock<Result<Option<ReadCapabilityPolicy>, String>> = OnceLock::new();
 
-pub struct ReadCapabilityPolicy {
+pub(crate) struct ReadCapabilityPolicy {
     token: Box<str>,
     allowed_scopes: HashSet<String>,
     grant: RetrievalGrant,
@@ -88,7 +88,7 @@ impl ReadCapabilityPolicy {
     }
 
     #[cfg(test)]
-    fn for_test(token: &str, scopes: &[&str], grant: RetrievalGrant) -> Self {
+    pub(crate) fn for_test(token: &str, scopes: &[&str], grant: RetrievalGrant) -> Self {
         Self {
             token: token.into(),
             allowed_scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
@@ -96,11 +96,19 @@ impl ReadCapabilityPolicy {
         }
     }
 
+    pub(crate) fn grant_for_token(&self, token: &ReadCapabilityToken) -> Option<RetrievalGrant> {
+        constant_time_equal(self.token.as_bytes(), token.0.as_bytes()).then_some(self.grant)
+    }
+
+    pub(crate) fn scope_allowed(&self, scope_id: &ScopeId) -> bool {
+        self.allowed_scopes.contains(&scope_id.0)
+    }
+
     fn authorize(&self, token: &ReadCapabilityToken, scope_id: &ScopeId) -> Option<RetrievalGrant> {
-        if !self.allowed_scopes.contains(&scope_id.0) {
+        if !self.scope_allowed(scope_id) {
             return None;
         }
-        constant_time_equal(self.token.as_bytes(), token.0.as_bytes()).then_some(self.grant)
+        self.grant_for_token(token)
     }
 }
 
@@ -132,16 +140,23 @@ impl ReadRequestError {
     }
 }
 
+pub(crate) fn environment_read_policy() -> Result<Option<&'static ReadCapabilityPolicy>, String> {
+    match ENVIRONMENT_POLICY.get_or_init(ReadCapabilityPolicy::from_environment) {
+        Ok(Some(policy)) => Ok(Some(policy)),
+        Ok(None) => Ok(None),
+        Err(error) => Err(error.clone()),
+    }
+}
+
 pub fn query_timeline_from_environment(
     repository: &SqliteRepository,
     authorization: &ReadCapabilityToken,
     query: LocalTimelineQuery,
 ) -> Result<LocalTimelinePage, ReadRequestError> {
-    let policy = ENVIRONMENT_POLICY.get_or_init(ReadCapabilityPolicy::from_environment);
-    match policy {
+    match environment_read_policy() {
         Ok(Some(policy)) => query_timeline_with_policy(repository, policy, authorization, query),
         Ok(None) => Err(ReadRequestError::NotAuthorized),
-        Err(error) => Err(ReadRequestError::Configuration(error.clone())),
+        Err(error) => Err(ReadRequestError::Configuration(error)),
     }
 }
 

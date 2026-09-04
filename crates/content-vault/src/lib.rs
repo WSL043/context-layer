@@ -112,7 +112,9 @@ impl ContentVault {
         }
 
         let file = OpenOptions::new().read(true).open(&path)?;
-        let read_limit = u64::try_from(max_bytes).unwrap_or(u64::MAX).saturating_add(1);
+        let read_limit = u64::try_from(max_bytes)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
         let mut bytes = Vec::with_capacity(
             usize::try_from(metadata.len())
                 .unwrap_or(max_bytes)

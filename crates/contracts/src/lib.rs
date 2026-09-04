@@ -292,6 +292,15 @@ pub struct LocalTimelinePage {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LocalTextContent {
+    pub event_id: Uuid,
+    pub sha256: String,
+    pub media_type: String,
+    pub byte_length: u64,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LocalApiRequest {
     pub request_id: Uuid,
     pub protocol_version: u16,
@@ -314,6 +323,11 @@ pub enum LocalApiCommand {
         authorization: ReadCapabilityToken,
         query: LocalTimelineQuery,
     },
+    ReadTextContent {
+        authorization: ReadCapabilityToken,
+        event_id: Uuid,
+        sha256: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -329,6 +343,7 @@ pub enum LocalApiResult {
     Ready { server_name: String },
     EventAccepted { event_id: Uuid, duplicate: bool },
     TimelinePage { page: LocalTimelinePage },
+    TextContent { content: LocalTextContent },
     Error { code: String, message: String },
 }
 

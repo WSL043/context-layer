@@ -75,10 +75,12 @@ mod tests {
         assert_eq!(found.scope_id, ScopeId("scope.personal".into()));
         assert_eq!(found.sensitivity, SensitivityClass::Sensitive);
         assert!(found.envelope_json.contains("fixture.lookup"));
-        assert!(engine
-            .repository()
-            .raw_event_by_id(Uuid::now_v7())
-            .unwrap()
-            .is_none());
+        assert!(
+            engine
+                .repository()
+                .raw_event_by_id(Uuid::now_v7())
+                .unwrap()
+                .is_none()
+        );
     }
 }
