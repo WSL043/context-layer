@@ -1,9 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    io::Read,
-    net::IpAddr,
-    time::Duration as StdDuration,
-};
+use std::{collections::BTreeMap, io::Read, net::IpAddr, time::Duration as StdDuration};
 
 use reqwest::{
     StatusCode,

@@ -231,7 +231,9 @@ fn screenpipe_runtime_config(
                 }
             },
             Err(error) => {
-                eprintln!("screenpipe adapter disabled: persisted cursor event is invalid: {error}");
+                eprintln!(
+                    "screenpipe adapter disabled: persisted cursor event is invalid: {error}"
+                );
                 return None;
             }
         },
