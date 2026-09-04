@@ -19,6 +19,7 @@ use time::OffsetDateTime;
 
 use crate::{collector::CollectorState, handle_request};
 
+#[cfg(any(windows, test))]
 #[path = "clipboard_capture.rs"]
 mod clipboard_capture;
 
@@ -151,10 +152,9 @@ fn open_clipboard_vault(database_path: &Path) -> Result<Option<ContentVault>> {
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let vault_root = data_root.join("vault").join("blobs");
-    Ok(Some(
-        ContentVault::open(&vault_root)
-            .with_context(|| format!("open content vault {}", vault_root.display()))?,
-    ))
+    Ok(Some(ContentVault::open(&vault_root).with_context(|| {
+        format!("open content vault {}", vault_root.display())
+    })?))
 }
 
 #[cfg(not(windows))]
