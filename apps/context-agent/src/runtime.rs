@@ -8,18 +8,19 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use context_content_vault::ContentVault;
 #[cfg(windows)]
-use context_contracts::{ContentRef, EventEnvelopeV2, RetrievalClass, SensitivityClass};
+use context_contracts::EventEnvelopeV2;
 use context_contracts::{LocalApiRequest, LocalApiResponse};
 use context_local_ipc::{NamedPipeServer, read_frame, write_frame};
 #[cfg(windows)]
 use context_platform_windows::{ClipboardSnapshot, clipboard_snapshot_if_changed};
 use context_platform_windows::{DirectoryWatcher, WatchCancellation, WatchOutcome};
 #[cfg(windows)]
-use serde_json::json;
-#[cfg(windows)]
 use time::OffsetDateTime;
 
 use crate::{collector::CollectorState, handle_request};
+
+#[path = "clipboard_capture.rs"]
+mod clipboard_capture;
 
 #[cfg(windows)]
 #[path = "personal.rs"]
@@ -70,7 +71,7 @@ pub fn run(root: PathBuf, database_path: PathBuf, max_batches: Option<usize>) ->
 
 fn event_loop(
     state: &mut CollectorState,
-    clipboard_vault: Option<&ContentVault>,
+    _clipboard_vault: Option<&ContentVault>,
     cancellation: &WatchCancellation,
     events: Receiver<RuntimeEvent>,
     max_batches: Option<usize>,
@@ -116,9 +117,16 @@ fn event_loop(
             }
             #[cfg(windows)]
             RuntimeEvent::Clipboard(observation) => {
-                let vault = clipboard_vault.expect("Windows runtime opens the clipboard vault");
-                ingest_clipboard_observation(state, vault, *observation)?;
-                clipboard_events.set(clipboard_events.get() + 1);
+                let vault = _clipboard_vault.expect("Windows runtime opens the clipboard vault");
+                if let Some(event) = clipboard_capture::event_from_snapshot(
+                    vault,
+                    observation.snapshot,
+                    observation.observed_at,
+                    MAX_CLIPBOARD_RAW_UTF16_BYTES,
+                )? {
+                    state.engine_mut().ingest_v2(&event)?;
+                    clipboard_events.set(clipboard_events.get() + 1);
+                }
             }
             RuntimeEvent::Api { request, response } => {
                 let reply = handle_request(state.engine_mut(), request);
@@ -252,74 +260,6 @@ fn spawn_clipboard(_cancellation: WatchCancellation, _events: Sender<RuntimeEven
 struct ClipboardObservation {
     observed_at: OffsetDateTime,
     snapshot: ClipboardSnapshot,
-}
-
-#[cfg(windows)]
-fn ingest_clipboard_observation(
-    state: &mut CollectorState,
-    vault: &ContentVault,
-    observation: ClipboardObservation,
-) -> Result<()> {
-    let device_id = std::env::var("COMPUTERNAME").ok();
-    match observation.snapshot {
-        ClipboardSnapshot::Text {
-            sequence,
-            text,
-            raw_utf16_bytes,
-        } => {
-            let stored = vault.put_bytes(text.as_bytes())?;
-            let mut event = EventEnvelopeV2::observed(
-                "clipboard.text_observed",
-                "windows.clipboard",
-                "scope.personal",
-                observation.observed_at,
-                json!({
-                    "clipboard_sequence": sequence,
-                    "raw_utf16_bytes": raw_utf16_bytes,
-                    "text_encoding": "utf-8",
-                }),
-                "windows-clipboard-v1",
-                "CF_UNICODETEXT clipboard snapshot stored by content hash",
-            );
-            event.device_id = device_id;
-            event.sensitivity = SensitivityClass::Sensitive;
-            event.content_refs = vec![ContentRef {
-                sha256: stored.sha256,
-                media_type: "text/plain; charset=utf-8".into(),
-                byte_length: stored.byte_length,
-                compression: None,
-                storage_class: "local_vault".into(),
-                retrieval_class: RetrievalClass::Sensitive,
-            }];
-            state.engine_mut().ingest_v2(&event)?;
-        }
-        ClipboardSnapshot::OversizedText {
-            sequence,
-            raw_utf16_bytes,
-        } => {
-            let mut event = EventEnvelopeV2::observed(
-                "clipboard.text_omitted",
-                "windows.clipboard",
-                "scope.personal",
-                observation.observed_at,
-                json!({
-                    "clipboard_sequence": sequence,
-                    "raw_utf16_bytes": raw_utf16_bytes,
-                    "raw_utf16_byte_limit": MAX_CLIPBOARD_RAW_UTF16_BYTES,
-                    "reason": "capture_size_limit",
-                }),
-                "windows-clipboard-v1",
-                "clipboard text exceeded the bounded raw capture limit",
-            );
-            event.device_id = device_id;
-            event.sensitivity = SensitivityClass::Sensitive;
-            state.engine_mut().ingest_v2(&event)?;
-        }
-        ClipboardSnapshot::NonText { .. } => {
-            unreachable!("non-text clipboard changes are filtered before the runtime channel")
-        }
-    }
-    Ok(())
 }
 
 fn spawn_ipc(
