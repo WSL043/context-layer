@@ -7,6 +7,7 @@ members = [
   "crates/core",
   "crates/local-ipc",
   "crates/platform-windows",
+  "crates/screenpipe-adapter",
   "crates/storage-sqlite",
 ]
 resolver = "2"
@@ -24,8 +25,10 @@ context-contracts = { path = "crates/contracts" }
 context-core = { path = "crates/core" }
 context-local-ipc = { path = "crates/local-ipc" }
 context-platform-windows = { path = "crates/platform-windows" }
+context-screenpipe-adapter = { path = "crates/screenpipe-adapter" }
 context-storage-sqlite = { path = "crates/storage-sqlite" }
 ctrlc = "3.4"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
