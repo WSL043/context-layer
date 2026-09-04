@@ -3,10 +3,12 @@ use std::{io, path::Path};
 use context_contracts::FileIdentity;
 
 mod activity;
+mod clipboard;
 mod reconcile;
 mod watcher;
 
 pub use activity::{ForegroundActivity, foreground_activity, input_idle_millis};
+pub use clipboard::{ClipboardSnapshot, clipboard_snapshot_if_changed};
 pub use reconcile::{
     ReconcileIssue, ReconcileIssueKind, ReconcileReport, ReconciledFile, scan_scope,
 };
