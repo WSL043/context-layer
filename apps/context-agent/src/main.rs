@@ -1,6 +1,10 @@
-use std::{env, path::PathBuf};
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, bail};
+use context_content_vault::ContentVault;
 #[cfg(test)]
 use context_contracts::EventEnvelopeV2;
 use context_contracts::{EventEnvelope, EventPayload, FileChange};
@@ -15,6 +19,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 mod collector;
+mod content_read;
 mod read_capability;
 mod runtime;
 
@@ -246,20 +251,32 @@ fn watch_once(root: PathBuf, database_path: PathBuf) -> Result<()> {
     Ok(())
 }
 
+fn open_content_vault_for_database(database_path: &Path) -> Result<ContentVault> {
+    let data_root = database_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let vault_root = data_root.join("vault").join("blobs");
+    ContentVault::open(&vault_root)
+        .with_context(|| format!("open content vault {}", vault_root.display()))
+}
+
 fn serve_once(database_path: PathBuf) -> Result<()> {
     let repository = SqliteRepository::open(&database_path)
         .with_context(|| format!("open database {}", database_path.display()))?;
     let mut engine = ContextEngine::new(repository);
+    let content_vault = open_content_vault_for_database(&database_path)?;
     let server = NamedPipeServer::bind_current_user().context("bind current-user named pipe")?;
     let mut connection = server.accept().context("accept local API client")?;
     let request: LocalApiRequest = read_frame(&mut connection).context("read local API request")?;
-    let response = handle_request(&mut engine, request);
+    let response = handle_request(&mut engine, Some(&content_vault), request);
     write_frame(&mut connection, &response).context("write local API response")?;
     Ok(())
 }
 
 fn handle_request(
     engine: &mut ContextEngine<SqliteRepository>,
+    content_vault: Option<&ContentVault>,
     request: LocalApiRequest,
 ) -> LocalApiResponse {
     let result = if request.protocol_version != LOCAL_API_VERSION {
@@ -309,6 +326,29 @@ fn handle_request(
                     message: error.message(),
                 },
             },
+            LocalApiCommand::ReadTextContent {
+                authorization,
+                event_id,
+                sha256,
+            } => match content_vault {
+                Some(vault) => match content_read::read_text_content_from_environment(
+                    engine.repository(),
+                    vault,
+                    &authorization,
+                    event_id,
+                    &sha256,
+                ) {
+                    Ok(content) => LocalApiResult::TextContent { content },
+                    Err(error) => LocalApiResult::Error {
+                        code: error.code().into(),
+                        message: error.message(),
+                    },
+                },
+                None => LocalApiResult::Error {
+                    code: "content_unavailable".into(),
+                    message: "content vault is unavailable in this runtime".into(),
+                },
+            },
         }
     };
     LocalApiResponse {
@@ -339,6 +379,7 @@ mod tests {
         let request_id = Uuid::now_v7();
         let response = handle_request(
             &mut engine,
+            None,
             LocalApiRequest {
                 request_id,
                 protocol_version: LOCAL_API_VERSION,
@@ -378,6 +419,7 @@ mod tests {
         let request_id = Uuid::now_v7();
         let response = handle_request(
             &mut engine,
+            None,
             LocalApiRequest {
                 request_id,
                 protocol_version: LOCAL_API_VERSION,

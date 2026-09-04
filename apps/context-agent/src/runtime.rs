@@ -172,7 +172,7 @@ fn event_loop(
                 let _ = committed.send(outcome);
             }
             RuntimeEvent::Api { request, response } => {
-                let reply = handle_request(state.engine_mut(), request);
+                let reply = handle_request(state.engine_mut(), _content_vault, request);
                 let _ = response.send(reply);
             }
             RuntimeEvent::Fatal(error) => return Err(anyhow!(error)),

@@ -1,3 +1,4 @@
+pub mod content_access;
 pub mod retrieval;
 
 use context_contracts::{
