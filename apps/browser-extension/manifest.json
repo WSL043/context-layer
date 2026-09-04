@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Context Layer",
-  "version": "0.1.0",
-  "description": "Sends completed download provenance to the local Context Layer agent.",
+  "version": "0.2.0",
+  "description": "Sends active-page activity and completed download provenance to the local Context Layer agent.",
   "permissions": [
     "alarms",
     "downloads",
     "nativeMessaging",
-    "storage"
+    "storage",
+    "tabs"
   ],
   "background": {
     "service_worker": "service-worker.js",
