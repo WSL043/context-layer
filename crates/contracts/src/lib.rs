@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::OffsetDateTime;
@@ -231,6 +233,64 @@ impl EventEnvelopeV2 {
     }
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ReadCapabilityToken(pub String);
+
+impl fmt::Debug for ReadCapabilityToken {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ReadCapabilityToken([REDACTED])")
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalTimelineCursor {
+    #[serde(with = "time::serde::rfc3339")]
+    pub observed_at: OffsetDateTime,
+    pub event_id: Uuid,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalTimelineQuery {
+    pub scope_id: ScopeId,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub start_at: Option<OffsetDateTime>,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub end_at: Option<OffsetDateTime>,
+    pub before: Option<LocalTimelineCursor>,
+    pub limit: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LocalTimelineEntry {
+    pub event_id: Uuid,
+    pub schema_version: u16,
+    pub event_type: String,
+    pub source: SourceId,
+    pub source_sequence: Option<u64>,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub occurred_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub observed_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub ingested_at: OffsetDateTime,
+    pub device_id: Option<String>,
+    pub scope_id: ScopeId,
+    pub correlation_id: Option<Uuid>,
+    pub sensitivity: SensitivityClass,
+    pub content_refs: Vec<ContentRef>,
+    pub content_refs_omitted: u32,
+    pub payload: Option<Value>,
+    pub payload_omitted_reason: Option<String>,
+    pub evidence: EvidenceDescriptor,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LocalTimelinePage {
+    pub entries: Vec<LocalTimelineEntry>,
+    pub next_cursor: Option<LocalTimelineCursor>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LocalApiRequest {
     pub request_id: Uuid,
@@ -244,6 +304,10 @@ pub enum LocalApiCommand {
     Handshake { client_name: String },
     SubmitEvent { event: Box<EventEnvelope> },
     SubmitEventV2 { event: Box<EventEnvelopeV2> },
+    QueryTimeline {
+        authorization: ReadCapabilityToken,
+        query: LocalTimelineQuery,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -258,6 +322,7 @@ pub struct LocalApiResponse {
 pub enum LocalApiResult {
     Ready { server_name: String },
     EventAccepted { event_id: Uuid, duplicate: bool },
+    TimelinePage { page: LocalTimelinePage },
     Error { code: String, message: String },
 }
 
@@ -417,6 +482,35 @@ mod tests {
 
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("submit_event_v2"));
+        let decoded: LocalApiRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn timeline_query_token_is_redacted_in_debug_and_carries_no_grant_fields() {
+        let request = LocalApiRequest {
+            request_id: Uuid::now_v7(),
+            protocol_version: LOCAL_API_VERSION,
+            command: LocalApiCommand::QueryTimeline {
+                authorization: ReadCapabilityToken("this-is-a-test-token-with-more-than-32-bytes".into()),
+                query: LocalTimelineQuery {
+                    scope_id: ScopeId("scope.personal".into()),
+                    start_at: None,
+                    end_at: None,
+                    before: None,
+                    limit: 10,
+                },
+            },
+        };
+
+        let debug = format!("{request:?}");
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("this-is-a-test-token"));
+
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("query_timeline"));
+        assert!(!json.contains("max_event_sensitivity"));
+        assert!(!json.contains("max_content_retrieval"));
         let decoded: LocalApiRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, request);
     }
