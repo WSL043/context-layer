@@ -10,17 +10,20 @@ This repository is an architecture-first alpha scaffold. It currently proves the
 
 ## Current vertical slice
 
-- versioned, typed event envelope;
-- deterministic projection commands;
+- legacy typed v1 events plus an open v2 raw envelope for unknown/future collector payloads;
+- distinct occurrence, observation, and authoritative ingestion clocks;
+- deterministic projection commands for built-in typed events;
 - atomic SQLite event + projection writes;
-- duplicate-event idempotency;
+- duplicate-event idempotency and immutable raw evidence;
 - stable Windows file identity across rename;
 - cancellable overlapped `ReadDirectoryChangesExW` batches with File IDs and explicit gap semantics;
 - persistent per-scope source checkpoints and startup/gap reconciliation;
+- sparse Windows foreground-window/process/title and input-idle activity capture;
 - a 1 MiB-capped, versioned local JSON framing contract;
 - a local-only Named Pipe protected by a current-user SID DACL;
-- a Native Messaging host that validates origin, URLs, paths, and protocol version;
-- a minimal Manifest V3 Chromium extension with a bounded durable delivery outbox;
+- a Native Messaging host that validates origin, URLs, paths, bridge protocol, and Local API protocol independently;
+- a Manifest V3 Chromium extension with a bounded durable delivery outbox;
+- active HTTP(S) page state capture on tab/page/browser-focus transitions, including full URL and title as sensitive evidence;
 - automatic download/file correlation in either arrival order;
 - duplicate replay repair after an interrupted derived projection;
 - forward-only, version-checked SQLite schema migration;
@@ -64,11 +67,17 @@ cargo run -p context-agent -- --watch-once C:\path\you\selected .\context.db
 
 Run the unified Agent until Ctrl+C, keeping its database outside the selected
 scope. This is the normal development runtime: one process owns SQLite while
-serving Native Host requests and the Windows watcher:
+serving Native Host requests, the Windows file watcher, and sparse foreground /
+input-idle sampling:
 
 ```powershell
 cargo run -p context-agent -- --run C:\path\you\selected .\data\context.db
 ```
+
+With the unpacked Chromium extension and allowlisted Native Host installed, the
+same Agent also receives durable browser download and active-page events. Active
+page capture records HTTP(S) URL/title state changes and browser focus boundaries;
+it does not read page DOM/content in this slice.
 
 For bounded diagnostics, `--run-batches <directory> <count> [database]` exits
 after the requested number of watcher batches. The collector-only equivalents
