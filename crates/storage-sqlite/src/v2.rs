@@ -24,6 +24,25 @@ impl SqliteRepository {
             )
             .optional()?)
     }
+
+    pub fn latest_raw_event_envelope_for_source(
+        &self,
+        source: &str,
+        scope_id: &str,
+    ) -> Result<Option<String>, StorageError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT envelope_json
+                 FROM raw_event
+                 WHERE source = ?1 AND scope_id = ?2 AND source_sequence IS NOT NULL
+                 ORDER BY source_sequence DESC
+                 LIMIT 1",
+                params![source, scope_id],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
 }
 
 impl RawEventRepository for SqliteRepository {
@@ -141,6 +160,35 @@ mod tests {
         assert_eq!(stored["occurred_at"], "2023-11-14T22:13:20Z");
         assert_eq!(stored["observed_at"], "2023-11-14T22:15:20Z");
         assert_ne!(stored["ingested_at"], "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn latest_source_event_is_a_durable_collector_cursor() {
+        let repository = SqliteRepository::in_memory().unwrap();
+        let mut engine = ContextEngine::new(repository);
+        for sequence in [40, 42, 41] {
+            let mut event = EventEnvelopeV2::observed(
+                "screenpipe.ui_frame_observed",
+                "screenpipe.local",
+                "scope.personal",
+                OffsetDateTime::from_unix_timestamp(1_700_000_000 + sequence as i64).unwrap(),
+                json!({"screenpipe_frame_id": sequence}),
+                "screenpipe-rest-v1",
+                "fixture",
+            );
+            event.source_sequence = Some(sequence);
+            event.occurred_at = Some(event.observed_at);
+            engine.ingest_v2(&event).unwrap();
+        }
+
+        let stored = engine
+            .repository()
+            .latest_raw_event_envelope_for_source("screenpipe.local", "scope.personal")
+            .unwrap()
+            .unwrap();
+        let cursor: EventEnvelopeV2 = serde_json::from_str(&stored).unwrap();
+        assert_eq!(cursor.source_sequence, Some(42));
+        assert_eq!(cursor.payload["screenpipe_frame_id"], 42);
     }
 
     #[test]
