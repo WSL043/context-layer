@@ -125,9 +125,9 @@ impl ReadRequestError {
     pub fn message(&self) -> String {
         match self {
             Self::NotAuthorized => "timeline read is not authorized".into(),
-            Self::InvalidQuery(message) | Self::Configuration(message) | Self::QueryFailed(message) => {
-                message.clone()
-            }
+            Self::InvalidQuery(message)
+            | Self::Configuration(message)
+            | Self::QueryFailed(message) => message.clone(),
         }
     }
 }
@@ -185,13 +185,9 @@ fn map_wire_page(
     grant: RetrievalGrant,
 ) -> Result<LocalTimelinePage, ReadRequestError> {
     let mut wire_entries = Vec::with_capacity(entries.len());
-    let mut forced_cursor = None;
+    let mut wire_truncated = false;
 
     for entry in entries {
-        let entry_cursor = LocalTimelineCursor {
-            observed_at: entry.observed_at,
-            event_id: entry.event_id,
-        };
         let wire_entry = map_wire_entry(entry, grant)?;
         wire_entries.push(wire_entry);
 
@@ -209,17 +205,16 @@ fn map_wire_page(
                     "a timeline entry exceeds the bounded local API response budget".into(),
                 ));
             }
-            forced_cursor = wire_entries.last().map(|entry| LocalTimelineCursor {
-                observed_at: entry.observed_at,
-                event_id: entry.event_id,
-            });
+            wire_truncated = true;
             break;
         }
-        forced_cursor = Some(entry_cursor);
     }
 
-    let next_cursor = if wire_entries.len() < entries_len_hint(&wire_entries, &forced_cursor) {
-        forced_cursor
+    let next_cursor = if wire_truncated {
+        wire_entries.last().map(|entry| LocalTimelineCursor {
+            observed_at: entry.observed_at,
+            event_id: entry.event_id,
+        })
     } else {
         core_next_cursor.map(|cursor| LocalTimelineCursor {
             observed_at: cursor.observed_at,
@@ -233,11 +228,6 @@ fn map_wire_page(
     })
 }
 
-// Keeps the page mapping branch explicit without exposing an unbounded page-size calculation.
-fn entries_len_hint(entries: &[LocalTimelineEntry], cursor: &Option<LocalTimelineCursor>) -> usize {
-    entries.len() + usize::from(cursor.is_some())
-}
-
 fn map_wire_entry(
     entry: TimelineEntry,
     grant: RetrievalGrant,
@@ -249,12 +239,14 @@ fn map_wire_entry(
 
     let mut payload = entry.payload;
     let mut payload_omitted_reason = if payload.is_none() {
-        Some(if grant.include_payload {
-            "policy"
-        } else {
-            "profile"
-        }
-        .to_owned())
+        Some(
+            if grant.include_payload {
+                "policy"
+            } else {
+                "profile"
+            }
+            .to_owned(),
+        )
     } else {
         None
     };
@@ -332,15 +324,30 @@ mod tests {
             &["scope.personal"],
             RetrievalGrant::metadata_only(),
         );
-        assert!(policy
-            .authorize(&ReadCapabilityToken(TOKEN.into()), &ScopeId("scope.personal".into()))
-            .is_some());
-        assert!(policy
-            .authorize(&ReadCapabilityToken("wrong-token-that-is-long-enough-xxxxxxxx".into()), &ScopeId("scope.personal".into()))
-            .is_none());
-        assert!(policy
-            .authorize(&ReadCapabilityToken(TOKEN.into()), &ScopeId("scope.other".into()))
-            .is_none());
+        assert!(
+            policy
+                .authorize(
+                    &ReadCapabilityToken(TOKEN.into()),
+                    &ScopeId("scope.personal".into())
+                )
+                .is_some()
+        );
+        assert!(
+            policy
+                .authorize(
+                    &ReadCapabilityToken("wrong-token-that-is-long-enough-xxxxxxxx".into()),
+                    &ScopeId("scope.personal".into())
+                )
+                .is_none()
+        );
+        assert!(
+            policy
+                .authorize(
+                    &ReadCapabilityToken(TOKEN.into()),
+                    &ScopeId("scope.other".into())
+                )
+                .is_none()
+        );
     }
 
     #[test]
@@ -411,6 +418,7 @@ mod tests {
             page.entries[0].payload.as_ref().unwrap()["url"],
             "https://private.test"
         );
+        assert!(page.next_cursor.is_none());
     }
 
     #[test]
