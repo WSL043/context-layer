@@ -5,11 +5,15 @@ import {
   downloadCompleted,
   isWebUrl,
   responseAccepted,
+  textInteractionObserved,
 } from "./protocol.js";
 
 const STATE_KEY = "deliveryStateV1";
 const RETRY_ALARM = "context-layer-delivery-retry";
+const CONTENT_INTERACTION_MESSAGE = "context_layer_text_interaction";
 const MAX_OUTBOX_MESSAGES = 256;
+const MAX_OUTBOX_BYTES = 4 * 1024 * 1024;
+const encoder = new TextEncoder();
 let operationChain = Promise.resolve();
 
 function emptyState() {
@@ -62,9 +66,35 @@ function noteGap(state, reason) {
   }
 }
 
+function serializedBytes(value) {
+  return encoder.encode(JSON.stringify(value)).length;
+}
+
+function currentOutboxBytes(state) {
+  return Object.values(state.outbox)
+    .reduce((total, message) => total + serializedBytes(message), 0);
+}
+
+function queueOutboxMessage(state, key, message) {
+  const messageCount = Object.keys(state.outbox).length;
+  const projectedBytes = currentOutboxBytes(state) + serializedBytes(message);
+  if (messageCount >= MAX_OUTBOX_MESSAGES || projectedBytes > MAX_OUTBOX_BYTES) {
+    noteGap(
+      state,
+      messageCount >= MAX_OUTBOX_MESSAGES
+        ? "browser delivery outbox reached its 256-message safety limit"
+        : "browser delivery outbox reached its 4 MiB safety limit",
+    );
+    return false;
+  }
+  state.outbox[key] = message;
+  return true;
+}
+
 function outboxKey(message) {
   if (message.type === "download_completed") return message.download_id;
   if (message.type === "active_page_changed") return message.observation_id;
+  if (message.type === "text_interaction_observed") return message.observation_id;
   throw new Error(`unsupported outbox message type: ${message.type}`);
 }
 
@@ -113,16 +143,11 @@ async function enqueueCompleted(item) {
     const downloadId = state.downloadIds[key] || crypto.randomUUID();
     state.downloadIds[key] = downloadId;
     if (!state.outbox[downloadId]) {
-      state.lastSequence += 1;
-      if (Object.keys(state.outbox).length >= MAX_OUTBOX_MESSAGES) {
-        noteGap(state, "browser delivery outbox reached its 256-message safety limit");
+      const sequence = state.lastSequence + 1;
+      const message = downloadCompleted(item, downloadId, sequence);
+      state.lastSequence = sequence;
+      if (!queueOutboxMessage(state, downloadId, message)) {
         delete state.downloadIds[key];
-      } else {
-        state.outbox[downloadId] = downloadCompleted(
-          item,
-          downloadId,
-          state.lastSequence,
-        );
       }
     }
     await saveState(state);
@@ -138,18 +163,16 @@ async function enqueueActivePage(page, trigger) {
     if (state.lastActivePage?.signature === signature) return;
 
     state.lastActivePage = { ...page, signature };
-    state.lastSequence += 1;
+    const sequence = state.lastSequence + 1;
     const observationId = crypto.randomUUID();
-    if (Object.keys(state.outbox).length >= MAX_OUTBOX_MESSAGES) {
-      noteGap(state, "browser delivery outbox reached its 256-message safety limit");
-    } else {
-      state.outbox[observationId] = activePageChanged(
-        page,
-        observationId,
-        state.lastSequence,
-        trigger,
-      );
-    }
+    const message = activePageChanged(
+      page,
+      observationId,
+      sequence,
+      trigger,
+    );
+    state.lastSequence = sequence;
+    queueOutboxMessage(state, observationId, message);
     await saveState(state);
     await flushState();
   });
@@ -171,18 +194,33 @@ async function enqueueWindowBlurred() {
     };
     const signature = pageSignature(page);
     state.lastActivePage = { ...page, signature };
-    state.lastSequence += 1;
+    const sequence = state.lastSequence + 1;
     const observationId = crypto.randomUUID();
-    if (Object.keys(state.outbox).length >= MAX_OUTBOX_MESSAGES) {
-      noteGap(state, "browser delivery outbox reached its 256-message safety limit");
-    } else {
-      state.outbox[observationId] = activePageChanged(
-        page,
-        observationId,
-        state.lastSequence,
-        "window_blurred",
-      );
-    }
+    const message = activePageChanged(
+      page,
+      observationId,
+      sequence,
+      "window_blurred",
+    );
+    state.lastSequence = sequence;
+    queueOutboxMessage(state, observationId, message);
+    await saveState(state);
+    await flushState();
+  });
+}
+
+async function enqueueTextInteraction(observation) {
+  return runExclusive(async () => {
+    const state = await loadState();
+    const sequence = state.lastSequence + 1;
+    const observationId = crypto.randomUUID();
+    const message = textInteractionObserved(
+      observation,
+      observationId,
+      sequence,
+    );
+    state.lastSequence = sequence;
+    queueOutboxMessage(state, observationId, message);
     await saveState(state);
     await flushState();
   });
@@ -237,6 +275,39 @@ async function observeCurrentFocusedPage(trigger) {
   }
 }
 
+async function handleTextInteraction(message, sender) {
+  try {
+    const tab = sender.tab;
+    if (!tab?.active || !Number.isSafeInteger(tab.id) || !Number.isSafeInteger(tab.windowId)) {
+      return;
+    }
+    if (typeof sender.url !== "string" || sender.url !== message.url || !isWebUrl(sender.url)) {
+      return;
+    }
+    if (typeof tab.url === "string" && tab.url !== sender.url) {
+      return;
+    }
+    const window = await chrome.windows.get(tab.windowId);
+    if (!window?.focused) return;
+
+    await enqueueTextInteraction({
+      tabId: tab.id,
+      windowId: tab.windowId,
+      url: sender.url,
+      title: typeof tab.title === "string" ? tab.title : (message.title || ""),
+      interaction: message.interaction,
+      selectionStatus: message.selection_status,
+      selectedUtf8Bytes: message.selected_utf8_bytes,
+      selectedText: message.selected_text ?? null,
+      contextStatus: message.context_status,
+      visibleContext: message.visible_context ?? null,
+      observedAt: message.observed_at,
+    });
+  } catch {
+    // A navigation/focus race or malformed content-script message is not durable evidence.
+  }
+}
+
 chrome.downloads.onCreated.addListener((item) => {
   void stableDownloadId(item.id);
 });
@@ -279,6 +350,12 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
   void chrome.tabs.query({ active: true, windowId }).then((tabs) => (
     enqueueActivePage(pageFromTab(tabs[0], true), "window_focused")
   )).catch(() => undefined);
+});
+
+chrome.runtime.onMessage.addListener((message, sender) => {
+  if (message?.type === CONTENT_INTERACTION_MESSAGE) {
+    void handleTextInteraction(message, sender);
+  }
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {

@@ -1,0 +1,18 @@
+{
+  "type": "text_interaction_observed",
+  "protocol_version": 3,
+  "browser": "chromium",
+  "observation_id": "018bcfe5-6800-7000-8000-000000000003",
+  "source_sequence": 9,
+  "tab_id": 12,
+  "window_id": 3,
+  "url": "https://example.test/research",
+  "title": "Research note",
+  "interaction": "copy",
+  "selection_status": "retained",
+  "selected_utf8_bytes": 16,
+  "selected_text": "selected context",
+  "context_status": "retained",
+  "visible_context": "A paragraph with selected context inside.",
+  "observed_at": "2026-09-01T00:00:02Z"
+}
