@@ -20,6 +20,7 @@ This repository is an architecture-first alpha scaffold. It currently proves the
 - persistent per-scope source checkpoints and startup/gap reconciliation;
 - sparse Windows foreground-window/process/title and input-idle activity capture;
 - bounded Windows Unicode clipboard capture whose body is stored only in the content-addressed vault and referenced from sensitive v2 events;
+- an optional Screenpipe localhost REST adapter that retains discovered screen text and frame PNGs in the same vault without reading Screenpipe's internal database;
 - a 1 MiB-capped, versioned local JSON framing contract;
 - a local-only Named Pipe protected by a current-user SID DACL;
 - a Native Messaging host that validates origin, URLs, paths, bridge protocol, and Local API protocol independently;
@@ -69,9 +70,9 @@ cargo run -p context-agent -- --watch-once C:\path\you\selected .\context.db
 Run the unified Agent until Ctrl+C, keeping its database outside the selected
 scope. This is the normal development runtime: one process owns SQLite while
 serving Native Host requests, the Windows file watcher, sparse foreground /
-input-idle sampling, and bounded clipboard observation. Clipboard text bytes are
-written to `vault/blobs` beside the database; SQLite stores only the event metadata
-and content reference:
+input-idle sampling, and bounded clipboard observation. Raw clipboard and screen
+content is written to `vault/blobs` beside the database; SQLite stores event
+metadata and content references rather than the raw bodies:
 
 ```powershell
 cargo run -p context-agent -- --run C:\path\you\selected .\data\context.db
@@ -81,6 +82,32 @@ With the unpacked Chromium extension and allowlisted Native Host installed, the
 same Agent also receives durable browser download and active-page events. Active
 page capture records HTTP(S) URL/title state changes and browser focus boundaries;
 it does not read page DOM/content in this slice.
+
+### Optional Screenpipe adapter
+
+The Screenpipe adapter is disabled unless a local API key is present. It uses only
+the documented localhost REST API; it does not read Screenpipe's SQLite tables or
+other internal storage.
+
+```powershell
+$env:SCREENPIPE_LOCAL_API_URL = "http://localhost:3030" # optional; this is the default
+$env:SCREENPIPE_LOCAL_API_KEY = "<your local Screenpipe API key>"
+cargo run -p context-agent -- --run C:\path\you\selected .\data\context.db
+```
+
+For compatibility, `SCREENPIPE_API_KEY` is accepted when the newer local-key
+environment variable is absent. The adapter rejects HTTPS, credentials, remote
+hosts, URL paths, queries, and fragments; only plain HTTP on localhost/loopback is
+accepted.
+
+On first enablement it imports only the latest five minutes of screen-text frames
+discoverable through Screenpipe's official Search API. After a frame is durably
+stored, its Screenpipe `frame_id` and capture timestamp are part of the canonical
+raw event; restart recovery uses that event as the cursor, with a small overlap for
+safe replay. Accessibility text is preferred when available and OCR is the
+fallback for the same frame. The frame PNG and retained text are copied into the
+Context Layer vault, while the v2 event stores hashes, capture metadata, and
+explicit missing/oversized statuses.
 
 For bounded diagnostics, `--run-batches <directory> <count> [database]` exits
 after the requested number of watcher batches. The collector-only equivalents
@@ -101,9 +128,9 @@ cargo run -p context-native-host -- --agent-self-check
 
 ## Non-goals for the first foundation release
 
-No cloud account, sync, Windows service, kernel driver, screen capture, automatic file moves, automatic task switching, plugin marketplace, or administrator-only baseline.
+No cloud account, sync, Windows service, kernel driver, automatic file moves, automatic task switching, plugin marketplace, or administrator-only baseline.
 
-Screen capture remains outside the first foundation release itself; Personal Context v2 will integrate it behind a replaceable collector/backend boundary rather than coupling the core to one capture implementation.
+Screen/UI evidence stays behind a replaceable backend boundary. Screenpipe is the first adapter, not a storage or core dependency: disabling or replacing it must not change the event/vault contract.
 
 `apps/browser-extension` is an unpacked contract alpha. It is not registered in
 the browser by build or test commands; registration belongs to the per-user
