@@ -500,7 +500,7 @@ fn format_time(value: OffsetDateTime) -> Result<String, time::error::Format> {
     value.format(&Rfc3339)
 }
 
-const CURRENT_DATABASE_VERSION: u32 = 2;
+const CURRENT_DATABASE_VERSION: u32 = 3;
 
 fn migrate(connection: &mut Connection) -> Result<(), StorageError> {
     let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -521,6 +521,13 @@ fn migrate(connection: &mut Connection) -> Result<(), StorageError> {
     if version == 1 {
         let tx = connection.transaction()?;
         tx.execute_batch(SCHEMA_V2)?;
+        tx.pragma_update(None, "user_version", 2)?;
+        tx.commit()?;
+        version = 2;
+    }
+    if version == 2 {
+        let tx = connection.transaction()?;
+        tx.execute_batch(SCHEMA_V3)?;
         tx.pragma_update(None, "user_version", CURRENT_DATABASE_VERSION)?;
         tx.commit()?;
     }
@@ -618,6 +625,11 @@ CREATE TABLE collector_checkpoint (
   updated_at TEXT NOT NULL,
   PRIMARY KEY(source, scope_id)
 );
+"#;
+
+const SCHEMA_V3: &str = r#"
+CREATE INDEX IF NOT EXISTS raw_event_scope_observed_cursor
+ON raw_event(scope_id, observed_at DESC, event_id DESC);
 "#;
 
 #[cfg(test)]
@@ -977,4 +989,5 @@ mod tests {
     }
 }
 
+mod retrieval;
 mod v2;

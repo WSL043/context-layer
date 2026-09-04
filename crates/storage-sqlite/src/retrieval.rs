@@ -10,10 +10,7 @@ use super::*;
 impl TimelineRepository for SqliteRepository {
     type Error = StorageError;
 
-    fn query_raw_timeline(
-        &self,
-        query: &RawTimelineQuery,
-    ) -> Result<RawTimelinePage, Self::Error> {
+    fn query_raw_timeline(&self, query: &RawTimelineQuery) -> Result<RawTimelinePage, Self::Error> {
         let start_at = query.start_at.map(format_time).transpose()?;
         let end_at = query.end_at.map(format_time).transpose()?;
         let cursor_at = query
@@ -171,13 +168,15 @@ mod tests {
             })
             .unwrap();
         assert_eq!(page.records.len(), 2);
-        assert!(page
-            .records
-            .iter()
-            .all(|record| record.observed_at.unix_timestamp() >= 101));
-        assert!(page
-            .records
-            .iter()
-            .all(|record| record.observed_at.unix_timestamp() < 103));
+        assert!(
+            page.records
+                .iter()
+                .all(|record| record.observed_at.unix_timestamp() >= 101)
+        );
+        assert!(
+            page.records
+                .iter()
+                .all(|record| record.observed_at.unix_timestamp() < 103)
+        );
     }
 }
