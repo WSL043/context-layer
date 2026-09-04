@@ -11,7 +11,7 @@ pub struct RawEventLookup {
     pub event_id: Uuid,
     pub schema_version: u16,
     pub scope_id: ScopeId,
-    pub sensitivity: SensitivityClass,
+    pub sensitivity_json: String,
     pub envelope_json: String,
 }
 
@@ -35,6 +35,8 @@ pub enum ContentAccessError<E: std::error::Error + 'static> {
     Repository(#[source] E),
     #[error("raw event {event_id} uses unsupported schema/envelope version {version}")]
     UnsupportedVersion { event_id: Uuid, version: u16 },
+    #[error("raw event {event_id} has malformed indexed sensitivity: {message}")]
+    MalformedIndexedSensitivity { event_id: Uuid, message: String },
     #[error("raw event {event_id} could not be decoded: {message}")]
     MalformedRawEvent { event_id: Uuid, message: String },
     #[error("raw event {event_id} envelope metadata does not match indexed raw-event columns")]
@@ -50,12 +52,10 @@ impl<'a, R: RawEventLookupRepository> ContentAccessEngine<'a, R> {
         Self { repository }
     }
 
-    /// Returns `Ok(None)` for ordinary authorization misses: unknown event,
-    /// unauthorized scope, event sensitivity outside the grant, unreferenced
-    /// digest, or reference retrieval class outside the grant. Scope and event
-    /// sensitivity are checked from indexed raw-row metadata before parsing the
-    /// envelope, so an unauthorized caller cannot distinguish malformed content
-    /// in a scope it cannot read.
+    /// Ordinary authorization misses return `Ok(None)` rather than revealing
+    /// whether an event/ref exists. Scope is checked before indexed sensitivity
+    /// or the raw envelope are decoded, so corruption in an unauthorized scope
+    /// cannot become an existence oracle.
     pub fn authorize_reference<F>(
         &self,
         event_id: Uuid,
@@ -74,52 +74,61 @@ impl<'a, R: RawEventLookupRepository> ContentAccessEngine<'a, R> {
             return Ok(None);
         };
 
-        if !scope_allowed(&raw.scope_id)
-            || !event_sensitivity_allowed(raw.sensitivity, grant.max_event_sensitivity)
-        {
+        if !scope_allowed(&raw.scope_id) {
+            return Ok(None);
+        }
+        let indexed_sensitivity = serde_json::from_str::<SensitivityClass>(&raw.sensitivity_json)
+            .map_err(|error| ContentAccessError::MalformedIndexedSensitivity {
+                event_id,
+                message: error.to_string(),
+            })?;
+        if !event_sensitivity_allowed(indexed_sensitivity, grant.max_event_sensitivity) {
             return Ok(None);
         }
 
-        let (scope_id, event_sensitivity, refs, envelope_event_id) =
-            match raw.schema_version {
-                1 => {
-                    let envelope: EventEnvelope = serde_json::from_str(&raw.envelope_json)
-                        .map_err(|error| ContentAccessError::MalformedRawEvent {
+        let (scope_id, event_sensitivity, refs, envelope_event_id) = match raw.schema_version {
+            1 => {
+                let envelope: EventEnvelope =
+                    serde_json::from_str(&raw.envelope_json).map_err(|error| {
+                        ContentAccessError::MalformedRawEvent {
                             event_id,
                             message: error.to_string(),
-                        })?;
-                    let refs = match envelope.payload {
-                        EventPayload::ContentObserved { refs, .. } => refs,
-                        _ => Vec::new(),
-                    };
-                    (
-                        envelope.scope_id,
-                        envelope.sensitivity,
-                        refs,
-                        envelope.event_id,
-                    )
-                }
-                2 => {
-                    let envelope: EventEnvelopeV2 = serde_json::from_str(&raw.envelope_json)
-                        .map_err(|error| ContentAccessError::MalformedRawEvent {
+                        }
+                    })?;
+                let refs = match envelope.payload {
+                    EventPayload::ContentObserved { refs, .. } => refs,
+                    _ => Vec::new(),
+                };
+                (
+                    envelope.scope_id,
+                    envelope.sensitivity,
+                    refs,
+                    envelope.event_id,
+                )
+            }
+            2 => {
+                let envelope: EventEnvelopeV2 =
+                    serde_json::from_str(&raw.envelope_json).map_err(|error| {
+                        ContentAccessError::MalformedRawEvent {
                             event_id,
                             message: error.to_string(),
-                        })?;
-                    (
-                        envelope.scope_id,
-                        envelope.sensitivity,
-                        envelope.content_refs,
-                        envelope.event_id,
-                    )
-                }
-                version => {
-                    return Err(ContentAccessError::UnsupportedVersion { event_id, version });
-                }
-            };
+                        }
+                    })?;
+                (
+                    envelope.scope_id,
+                    envelope.sensitivity,
+                    envelope.content_refs,
+                    envelope.event_id,
+                )
+            }
+            version => {
+                return Err(ContentAccessError::UnsupportedVersion { event_id, version });
+            }
+        };
 
         if envelope_event_id != raw.event_id
             || scope_id != raw.scope_id
-            || event_sensitivity != raw.sensitivity
+            || event_sensitivity != indexed_sensitivity
         {
             return Err(ContentAccessError::EnvelopeMetadataMismatch { event_id });
         }
@@ -236,7 +245,7 @@ mod tests {
             event_id,
             schema_version: 2,
             scope_id,
-            sensitivity,
+            sensitivity_json: serde_json::to_string(&sensitivity).unwrap(),
             envelope_json: serde_json::to_string(&event).unwrap(),
         }
     }
@@ -278,17 +287,23 @@ mod tests {
 
         assert!(
             access
-                .authorize_reference(event_a, &shared_elsewhere.sha256, sensitive_grant(), |_| {
-                    true
-                },)
+                .authorize_reference(
+                    event_a,
+                    &shared_elsewhere.sha256,
+                    sensitive_grant(),
+                    |_| true,
+                )
                 .unwrap()
                 .is_none()
         );
         assert!(
             access
-                .authorize_reference(event_b, &shared_elsewhere.sha256, sensitive_grant(), |_| {
-                    true
-                },)
+                .authorize_reference(
+                    event_b,
+                    &shared_elsewhere.sha256,
+                    sensitive_grant(),
+                    |_| true,
+                )
                 .unwrap()
                 .is_some()
         );
@@ -319,14 +334,19 @@ mod tests {
         );
         assert!(
             access
-                .authorize_reference(event_id, &secret.sha256, sensitive_grant(), |_| true,)
+                .authorize_reference(
+                    event_id,
+                    &secret.sha256,
+                    sensitive_grant(),
+                    |_| true,
+                )
                 .unwrap()
                 .is_none()
         );
     }
 
     #[test]
-    fn unauthorized_scope_is_rejected_before_malformed_envelope_is_parsed() {
+    fn unauthorized_scope_is_rejected_before_malformed_indexed_or_envelope_data_is_parsed() {
         let event_id = Uuid::now_v7();
         let repository = FakeRepository {
             rows: HashMap::from([(
@@ -335,7 +355,7 @@ mod tests {
                     event_id,
                     schema_version: 2,
                     scope_id: ScopeId("scope.other".into()),
-                    sensitivity: SensitivityClass::Sensitive,
+                    sensitivity_json: "definitely not valid json".into(),
                     envelope_json: "{ definitely not valid json".into(),
                 },
             )]),
