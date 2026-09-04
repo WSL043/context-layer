@@ -301,9 +301,15 @@ pub struct LocalApiRequest {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LocalApiCommand {
-    Handshake { client_name: String },
-    SubmitEvent { event: Box<EventEnvelope> },
-    SubmitEventV2 { event: Box<EventEnvelopeV2> },
+    Handshake {
+        client_name: String,
+    },
+    SubmitEvent {
+        event: Box<EventEnvelope>,
+    },
+    SubmitEventV2 {
+        event: Box<EventEnvelopeV2>,
+    },
     QueryTimeline {
         authorization: ReadCapabilityToken,
         query: LocalTimelineQuery,
@@ -492,7 +498,9 @@ mod tests {
             request_id: Uuid::now_v7(),
             protocol_version: LOCAL_API_VERSION,
             command: LocalApiCommand::QueryTimeline {
-                authorization: ReadCapabilityToken("this-is-a-test-token-with-more-than-32-bytes".into()),
+                authorization: ReadCapabilityToken(
+                    "this-is-a-test-token-with-more-than-32-bytes".into(),
+                ),
                 query: LocalTimelineQuery {
                     scope_id: ScopeId("scope.personal".into()),
                     start_at: None,
