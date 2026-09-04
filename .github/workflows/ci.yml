@@ -32,3 +32,26 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --all-features
       - run: git diff --exit-code Cargo.lock
+
+  normalize-clipboard-lock:
+    if: github.event_name == 'pull_request' && github.head_ref == 'personal-context-clipboard'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: personal-context-clipboard
+      - run: rustup update stable
+      - run: cargo generate-lockfile
+      - name: Commit generated lockfile when needed
+        shell: bash
+        run: |
+          if git diff --quiet -- Cargo.lock; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.lock
+          git commit -m "build: update clipboard vault lockfile"
+          git push origin HEAD:personal-context-clipboard
