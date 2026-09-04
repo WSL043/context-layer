@@ -15,6 +15,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 mod collector;
+mod read_capability;
 mod runtime;
 
 fn main() -> Result<()> {
@@ -292,6 +293,20 @@ fn handle_request(
                 Err(error) => LocalApiResult::Error {
                     code: "ingest_failed".into(),
                     message: error.to_string(),
+                },
+            },
+            LocalApiCommand::QueryTimeline {
+                authorization,
+                query,
+            } => match read_capability::query_timeline_from_environment(
+                engine.repository(),
+                &authorization,
+                query,
+            ) {
+                Ok(page) => LocalApiResult::TimelinePage { page },
+                Err(error) => LocalApiResult::Error {
+                    code: error.code().into(),
+                    message: error.message(),
                 },
             },
         }
