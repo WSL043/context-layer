@@ -79,7 +79,7 @@ pub fn clipboard_snapshot_if_changed(
         return Ok(None);
     }
 
-    let format_available = unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT) } != 0;
+    let format_available = unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT.into()) } != 0;
     if !format_available {
         ensure_sequence_stable(sequence, "checking available formats")?;
         return Ok(Some(ClipboardSnapshot::NonText { sequence }));
@@ -90,7 +90,7 @@ pub fn clipboard_snapshot_if_changed(
     }
     let _clipboard = ClipboardGuard;
 
-    let handle = unsafe { GetClipboardData(CF_UNICODETEXT) };
+    let handle = unsafe { GetClipboardData(CF_UNICODETEXT.into()) };
     if handle.is_null() {
         return Err(io::Error::last_os_error());
     }
