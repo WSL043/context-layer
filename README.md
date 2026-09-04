@@ -19,6 +19,7 @@ This repository is an architecture-first alpha scaffold. It currently proves the
 - cancellable overlapped `ReadDirectoryChangesExW` batches with File IDs and explicit gap semantics;
 - persistent per-scope source checkpoints and startup/gap reconciliation;
 - sparse Windows foreground-window/process/title and input-idle activity capture;
+- bounded Windows Unicode clipboard capture whose body is stored only in the content-addressed vault and referenced from sensitive v2 events;
 - a 1 MiB-capped, versioned local JSON framing contract;
 - a local-only Named Pipe protected by a current-user SID DACL;
 - a Native Messaging host that validates origin, URLs, paths, bridge protocol, and Local API protocol independently;
@@ -67,8 +68,10 @@ cargo run -p context-agent -- --watch-once C:\path\you\selected .\context.db
 
 Run the unified Agent until Ctrl+C, keeping its database outside the selected
 scope. This is the normal development runtime: one process owns SQLite while
-serving Native Host requests, the Windows file watcher, and sparse foreground /
-input-idle sampling:
+serving Native Host requests, the Windows file watcher, sparse foreground /
+input-idle sampling, and bounded clipboard observation. Clipboard text bytes are
+written to `vault/blobs` beside the database; SQLite stores only the event metadata
+and content reference:
 
 ```powershell
 cargo run -p context-agent -- --run C:\path\you\selected .\data\context.db
