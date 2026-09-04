@@ -46,6 +46,7 @@ pub fn run(root: PathBuf, database_path: PathBuf, max_batches: Option<usize>) ->
     let content_vault = open_content_vault(&database_path)?;
     let mut state = CollectorState::open(root, database_path)?;
     let startup = state.reconcile()?;
+    #[cfg(windows)]
     let screenpipe = screenpipe_runtime_config(&mut state);
     let cancellation = WatchCancellation::new()?;
     let watcher = DirectoryWatcher::open(state.root(), true, 64 * 1024)
@@ -57,6 +58,7 @@ pub fn run(root: PathBuf, database_path: PathBuf, max_batches: Option<usize>) ->
     spawn_watcher(watcher, cancellation.clone(), events_tx.clone());
     spawn_personal_activity(cancellation.clone(), events_tx.clone());
     spawn_clipboard(cancellation.clone(), events_tx.clone());
+    #[cfg(windows)]
     if let Some((client, cursor)) = screenpipe {
         spawn_screenpipe(client, cursor, cancellation.clone(), events_tx.clone());
     }
@@ -240,13 +242,6 @@ fn screenpipe_runtime_config(
         }
     };
     Some((client, cursor))
-}
-
-#[cfg(not(windows))]
-fn screenpipe_runtime_config(
-    _state: &mut CollectorState,
-) -> Option<((), Option<()>)> {
-    None
 }
 
 fn spawn_watcher(
