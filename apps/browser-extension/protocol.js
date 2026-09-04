@@ -1,5 +1,8 @@
 export const HOST_NAME = "com.contextlayer.browser";
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
+export const LEGACY_PROTOCOL_VERSION = 1;
+
+const encoder = new TextEncoder();
 
 export function downloadCompleted(
   item,
@@ -20,9 +23,8 @@ export function downloadCompleted(
     throw new Error("download filename is required");
   }
   const url = item.finalUrl || item.url;
-  if (typeof url !== "string" || !/^https?:\/\//i.test(url)) {
-    throw new Error("download URL must use HTTP or HTTPS");
-  }
+  validateWebUrl(url);
+  if (item.referrer) validateWebUrl(item.referrer);
   return {
     type: "download_completed",
     protocol_version: PROTOCOL_VERSION,
@@ -33,6 +35,46 @@ export function downloadCompleted(
     url,
     referrer: item.referrer || null,
     final_path: item.filename,
+    observed_at: observedAt,
+  };
+}
+
+export function activePageChanged(
+  page,
+  observationId,
+  sourceSequence,
+  trigger,
+  observedAt = new Date().toISOString(),
+) {
+  if (typeof observationId !== "string" || observationId.length < 32) {
+    throw new Error("active-page observation UUID is required");
+  }
+  if (!Number.isSafeInteger(page?.tabId) || page.tabId < 0) {
+    throw new Error("active-page tab id must be a non-negative safe integer");
+  }
+  if (!Number.isSafeInteger(page?.windowId) || page.windowId < 0) {
+    throw new Error("active-page window id must be a non-negative safe integer");
+  }
+  validateWebUrl(page.url);
+  if (typeof page.title !== "string" || encoder.encode(page.title).length > 4096) {
+    throw new Error("active-page title must be at most 4096 UTF-8 bytes");
+  }
+  if (!["startup", "installed", "tab_activated", "page_updated", "window_focused", "window_blurred"].includes(trigger)) {
+    throw new Error("unsupported active-page trigger");
+  }
+  return {
+    type: "active_page_changed",
+    protocol_version: PROTOCOL_VERSION,
+    browser: "chromium",
+    observation_id: observationId,
+    source_sequence: sourceSequence,
+    tab_id: page.tabId,
+    window_id: page.windowId,
+    url: page.url,
+    title: page.title,
+    pinned: Boolean(page.pinned),
+    window_focused: Boolean(page.windowFocused),
+    trigger,
     observed_at: observedAt,
   };
 }
@@ -57,7 +99,31 @@ export function collectorGap(
   };
 }
 
-export function responseAccepted(response) {
-  return response?.protocol_version === PROTOCOL_VERSION
+export function responseAccepted(response, expectedProtocolVersion = PROTOCOL_VERSION) {
+  return response?.protocol_version === expectedProtocolVersion
     && response?.result?.type === "event_accepted";
+}
+
+export function isWebUrl(value) {
+  try {
+    validateWebUrl(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validateWebUrl(value) {
+  if (typeof value !== "string" || encoder.encode(value).length > 16_384) {
+    throw new Error("URL must be at most 16384 UTF-8 bytes");
+  }
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("URL must be valid HTTP or HTTPS");
+  }
+  if (!/^https?:$/i.test(parsed.protocol) || !parsed.hostname) {
+    throw new Error("URL must use HTTP or HTTPS and include a host");
+  }
 }
