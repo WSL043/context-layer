@@ -23,10 +23,11 @@ const MAX_WIRE_PAGE_BYTES: usize = 768 * 1024;
 
 static ENVIRONMENT_POLICY: OnceLock<Result<Option<ReadCapabilityPolicy>, String>> = OnceLock::new();
 
-pub struct ReadCapabilityPolicy {
+pub(crate) struct ReadCapabilityPolicy {
     token: Box<str>,
     allowed_scopes: HashSet<String>,
     grant: RetrievalGrant,
+    allow_text_content: bool,
 }
 
 impl ReadCapabilityPolicy {
@@ -50,13 +51,16 @@ impl ReadCapabilityPolicy {
             ));
         }
 
-        let grant = match profile.as_deref().unwrap_or("metadata") {
-            "metadata" => RetrievalGrant::metadata_only(),
-            "sensitive" => RetrievalGrant {
-                max_event_sensitivity: SensitivityClass::Sensitive,
-                max_content_retrieval: RetrievalClass::Sensitive,
-                include_payload: true,
-            },
+        let (grant, allow_text_content) = match profile.as_deref().unwrap_or("metadata") {
+            "metadata" => (RetrievalGrant::metadata_only(), false),
+            "sensitive" => (
+                RetrievalGrant {
+                    max_event_sensitivity: SensitivityClass::Sensitive,
+                    max_content_retrieval: RetrievalClass::Sensitive,
+                    include_payload: true,
+                },
+                true,
+            ),
             other => {
                 return Err(format!(
                     "unsupported {READ_PROFILE_ENV} value {other:?}; expected metadata or sensitive"
@@ -84,23 +88,42 @@ impl ReadCapabilityPolicy {
             token: token.into_boxed_str(),
             allowed_scopes,
             grant,
+            allow_text_content,
         }))
     }
 
     #[cfg(test)]
-    fn for_test(token: &str, scopes: &[&str], grant: RetrievalGrant) -> Self {
+    pub(crate) fn for_test(
+        token: &str,
+        scopes: &[&str],
+        grant: RetrievalGrant,
+        allow_text_content: bool,
+    ) -> Self {
         Self {
             token: token.into(),
             allowed_scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
             grant,
+            allow_text_content,
         }
     }
 
+    pub(crate) fn grant_for_token(&self, token: &ReadCapabilityToken) -> Option<RetrievalGrant> {
+        constant_time_equal(self.token.as_bytes(), token.0.as_bytes()).then_some(self.grant)
+    }
+
+    pub(crate) fn scope_allowed(&self, scope_id: &ScopeId) -> bool {
+        self.allowed_scopes.contains(&scope_id.0)
+    }
+
+    pub(crate) fn text_content_allowed(&self) -> bool {
+        self.allow_text_content
+    }
+
     fn authorize(&self, token: &ReadCapabilityToken, scope_id: &ScopeId) -> Option<RetrievalGrant> {
-        if !self.allowed_scopes.contains(&scope_id.0) {
+        if !self.scope_allowed(scope_id) {
             return None;
         }
-        constant_time_equal(self.token.as_bytes(), token.0.as_bytes()).then_some(self.grant)
+        self.grant_for_token(token)
     }
 }
 
@@ -132,16 +155,23 @@ impl ReadRequestError {
     }
 }
 
+pub(crate) fn environment_read_policy() -> Result<Option<&'static ReadCapabilityPolicy>, String> {
+    match ENVIRONMENT_POLICY.get_or_init(ReadCapabilityPolicy::from_environment) {
+        Ok(Some(policy)) => Ok(Some(policy)),
+        Ok(None) => Ok(None),
+        Err(error) => Err(error.clone()),
+    }
+}
+
 pub fn query_timeline_from_environment(
     repository: &SqliteRepository,
     authorization: &ReadCapabilityToken,
     query: LocalTimelineQuery,
 ) -> Result<LocalTimelinePage, ReadRequestError> {
-    let policy = ENVIRONMENT_POLICY.get_or_init(ReadCapabilityPolicy::from_environment);
-    match policy {
+    match environment_read_policy() {
         Ok(Some(policy)) => query_timeline_with_policy(repository, policy, authorization, query),
         Ok(None) => Err(ReadRequestError::NotAuthorized),
-        Err(error) => Err(ReadRequestError::Configuration(error.clone())),
+        Err(error) => Err(ReadRequestError::Configuration(error)),
     }
 }
 
@@ -323,6 +353,7 @@ mod tests {
             TOKEN,
             &["scope.personal"],
             RetrievalGrant::metadata_only(),
+            false,
         );
         assert!(
             policy
@@ -370,6 +401,7 @@ mod tests {
             TOKEN,
             &["scope.personal"],
             RetrievalGrant::metadata_only(),
+            false,
         );
         let page = query_timeline_with_policy(
             engine.repository(),
@@ -405,6 +437,7 @@ mod tests {
                 max_content_retrieval: RetrievalClass::Sensitive,
                 include_payload: true,
             },
+            true,
         );
         let page = query_timeline_with_policy(
             engine.repository(),
@@ -445,6 +478,7 @@ mod tests {
                 max_content_retrieval: RetrievalClass::Sensitive,
                 include_payload: true,
             },
+            true,
         );
         let page = query_timeline_with_policy(
             engine.repository(),

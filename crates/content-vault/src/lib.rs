@@ -1,6 +1,6 @@
 use std::{
     fs::{self, OpenOptions},
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -22,6 +22,12 @@ pub enum VaultError {
     Io(#[from] io::Error),
     #[error("content hash path requires a 64-character lowercase SHA-256 digest")]
     InvalidDigest,
+    #[error("content vault object is not a regular file")]
+    NotRegularFile,
+    #[error("content vault object exceeds the {limit}-byte read limit")]
+    TooLarge { limit: usize },
+    #[error("content vault object failed SHA-256 integrity verification")]
+    IntegrityMismatch,
 }
 
 pub struct ContentVault {
@@ -91,6 +97,39 @@ impl ContentVault {
         })
     }
 
+    pub fn read_verified_bytes(
+        &self,
+        digest: &str,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, VaultError> {
+        let path = self.path_for_digest(digest)?;
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            return Err(VaultError::NotRegularFile);
+        }
+        if metadata.len() > max_bytes as u64 {
+            return Err(VaultError::TooLarge { limit: max_bytes });
+        }
+
+        let file = OpenOptions::new().read(true).open(&path)?;
+        let read_limit = u64::try_from(max_bytes)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
+        let mut bytes = Vec::with_capacity(
+            usize::try_from(metadata.len())
+                .unwrap_or(max_bytes)
+                .min(max_bytes),
+        );
+        file.take(read_limit).read_to_end(&mut bytes)?;
+        if bytes.len() > max_bytes {
+            return Err(VaultError::TooLarge { limit: max_bytes });
+        }
+        if hex_sha256(&bytes) != digest {
+            return Err(VaultError::IntegrityMismatch);
+        }
+        Ok(bytes)
+    }
+
     pub fn path_for_digest(&self, digest: &str) -> Result<PathBuf, VaultError> {
         if digest.len() != 64
             || !digest
@@ -142,6 +181,29 @@ mod tests {
         assert_eq!(fs::read(&first.path).unwrap(), b"personal context");
         assert!(first.path.starts_with(&root));
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn verified_read_is_bounded_and_rechecks_digest() {
+        let root = temp_vault_root();
+        let vault = ContentVault::open(&root).unwrap();
+        let stored = vault.put_bytes(b"bounded personal context").unwrap();
+
+        assert_eq!(
+            vault.read_verified_bytes(&stored.sha256, 64).unwrap(),
+            b"bounded personal context"
+        );
+        assert!(matches!(
+            vault.read_verified_bytes(&stored.sha256, 4),
+            Err(VaultError::TooLarge { limit: 4 })
+        ));
+
+        fs::write(&stored.path, b"tampered personal context").unwrap();
+        assert!(matches!(
+            vault.read_verified_bytes(&stored.sha256, 64),
+            Err(VaultError::IntegrityMismatch)
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 
