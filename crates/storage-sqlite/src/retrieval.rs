@@ -22,7 +22,8 @@ impl TimelineRepository for SqliteRepository {
             .before
             .as_ref()
             .map(|cursor| cursor.event_id.to_string());
-        let sql_limit = query.limit.saturating_add(1);
+        let fetch_limit = query.limit.saturating_add(1);
+        let sql_limit = i64::try_from(fetch_limit).unwrap_or(i64::MAX);
 
         let mut statement = self.connection.prepare(
             "SELECT event_id, schema_version, observed_at, envelope_json
@@ -57,7 +58,7 @@ impl TimelineRepository for SqliteRepository {
             },
         )?;
 
-        let mut records = Vec::with_capacity(sql_limit);
+        let mut records = Vec::with_capacity(fetch_limit);
         for row in rows {
             let (event_id, schema_version, observed_at, envelope_json) = row?;
             records.push(RawTimelineRecord {

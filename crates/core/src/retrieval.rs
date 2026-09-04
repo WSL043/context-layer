@@ -344,6 +344,7 @@ mod tests {
 
     use context_contracts::{EvidenceDescriptor, EvidenceKind};
     use serde_json::json;
+    use time::Duration;
 
     use super::*;
 
