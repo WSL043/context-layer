@@ -11,12 +11,12 @@ impl TimelineRepository for SqliteRepository {
     type Error = StorageError;
 
     fn query_raw_timeline(&self, query: &RawTimelineQuery) -> Result<RawTimelinePage, Self::Error> {
-        let start_at = query.start_at.map(format_time).transpose()?;
-        let end_at = query.end_at.map(format_time).transpose()?;
+        let start_at = query.start_at.map(format_sort_key).transpose()?;
+        let end_at = query.end_at.map(format_sort_key).transpose()?;
         let cursor_at = query
             .before
             .as_ref()
-            .map(|cursor| format_time(cursor.observed_at))
+            .map(|cursor| format_sort_key(cursor.observed_at))
             .transpose()?;
         let cursor_id = query
             .before
@@ -29,14 +29,14 @@ impl TimelineRepository for SqliteRepository {
             "SELECT event_id, schema_version, observed_at, envelope_json
              FROM raw_event
              WHERE scope_id = ?1
-               AND (?2 IS NULL OR observed_at >= ?2)
-               AND (?3 IS NULL OR observed_at < ?3)
+               AND (?2 IS NULL OR observed_key >= ?2)
+               AND (?3 IS NULL OR observed_key < ?3)
                AND (
                  ?4 IS NULL
-                 OR observed_at < ?4
-                 OR (observed_at = ?4 AND event_id < ?5)
+                 OR observed_key < ?4
+                 OR (observed_key = ?4 AND event_id < ?5)
                )
-             ORDER BY observed_at DESC, event_id DESC
+             ORDER BY observed_key DESC, event_id DESC
              LIMIT ?6",
         )?;
         let rows = statement.query_map(
