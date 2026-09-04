@@ -1,3 +1,4 @@
+use context_contracts::{ScopeId, SensitivityClass};
 use context_core::content_access::{RawEventLookup, RawEventLookupRepository};
 use rusqlite::OptionalExtension;
 use uuid::Uuid;
@@ -8,22 +9,33 @@ impl RawEventLookupRepository for SqliteRepository {
     type Error = StorageError;
 
     fn raw_event_by_id(&self, event_id: Uuid) -> Result<Option<RawEventLookup>, Self::Error> {
-        Ok(self
+        let row = self
             .connection
             .query_row(
-                "SELECT schema_version, envelope_json
+                "SELECT schema_version, scope_id, sensitivity, envelope_json
                  FROM raw_event
                  WHERE event_id = ?1",
                 [event_id.to_string()],
                 |row| {
-                    Ok(RawEventLookup {
-                        event_id,
-                        schema_version: row.get(0)?,
-                        envelope_json: row.get(1)?,
-                    })
+                    Ok((
+                        row.get::<_, u16>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
                 },
             )
-            .optional()?)
+            .optional()?;
+        row.map(|(schema_version, scope_id, sensitivity, envelope_json)| {
+            Ok(RawEventLookup {
+                event_id,
+                schema_version,
+                scope_id: ScopeId(scope_id),
+                sensitivity: serde_json::from_str::<SensitivityClass>(&sensitivity)?,
+                envelope_json,
+            })
+        })
+        .transpose()
     }
 }
 
@@ -37,10 +49,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn raw_event_lookup_is_by_exact_event_id() {
+    fn raw_event_lookup_is_by_exact_event_id_with_authorization_metadata() {
         let repository = SqliteRepository::in_memory().unwrap();
         let mut engine = ContextEngine::new(repository);
-        let event = EventEnvelopeV2::observed(
+        let mut event = EventEnvelopeV2::observed(
             "fixture.lookup",
             "fixture",
             "scope.personal",
@@ -49,6 +61,7 @@ mod tests {
             "fixture",
             "raw lookup fixture",
         );
+        event.sensitivity = SensitivityClass::Sensitive;
         engine.ingest_v2(&event).unwrap();
 
         let found = engine
@@ -58,6 +71,8 @@ mod tests {
             .unwrap();
         assert_eq!(found.event_id, event.event_id);
         assert_eq!(found.schema_version, 2);
+        assert_eq!(found.scope_id, ScopeId("scope.personal".into()));
+        assert_eq!(found.sensitivity, SensitivityClass::Sensitive);
         assert!(found.envelope_json.contains("fixture.lookup"));
         assert!(engine
             .repository()
