@@ -1,0 +1,39 @@
+name: format-browser-activity-once
+
+on:
+  push:
+    branches: [personal-context-browser-activity]
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    if: github.event.head_commit.message == 'ci: apply rustfmt browser activity'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: personal-context-browser-activity
+      - run: rustup update stable
+      - name: Fix borrow and format Rust
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('apps/context-native-host/src/main.rs')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace('matches!(\n        request.command,', 'matches!(\n        &request.command,')
+          text = text.replace('matches!(\n            request.command,', 'matches!(\n            &request.command,')
+          path.write_text(text, encoding='utf-8')
+          PY
+          cargo fmt --all
+      - name: Commit formatted result and remove one-shot workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/format-browser-activity.yml
+          git add -A
+          git commit -m "style: format browser activity bridge"
+          git push origin HEAD:personal-context-browser-activity
