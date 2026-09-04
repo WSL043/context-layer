@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+context-content-vault.workspace = true
 context-contracts.workspace = true
 context-core.workspace = true
 context-local-ipc.workspace = true
