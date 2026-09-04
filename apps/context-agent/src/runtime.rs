@@ -15,6 +15,10 @@ use context_local_ipc::{NamedPipeServer, read_frame, write_frame};
 use context_platform_windows::{ClipboardSnapshot, clipboard_snapshot_if_changed};
 use context_platform_windows::{DirectoryWatcher, WatchCancellation, WatchOutcome};
 #[cfg(windows)]
+use context_screenpipe_adapter::{
+    ScreenpipeClient, ScreenpipeCursor, ScreenpipeError, ScreenpipeFrame,
+};
+#[cfg(windows)]
 use time::OffsetDateTime;
 
 use crate::{collector::CollectorState, handle_request};
@@ -27,13 +31,23 @@ mod clipboard_capture;
 #[path = "personal.rs"]
 mod personal;
 
+#[cfg(any(windows, test))]
+#[path = "screenpipe_capture.rs"]
+mod screenpipe_capture;
+
 #[cfg(windows)]
 const MAX_CLIPBOARD_RAW_UTF16_BYTES: usize = 8 * 1024 * 1024;
+#[cfg(windows)]
+const SCREENPIPE_SOURCE: &str = "screenpipe.local";
+#[cfg(windows)]
+const PERSONAL_SCOPE: &str = "scope.personal";
 
 pub fn run(root: PathBuf, database_path: PathBuf, max_batches: Option<usize>) -> Result<()> {
-    let clipboard_vault = open_clipboard_vault(&database_path)?;
+    let content_vault = open_content_vault(&database_path)?;
     let mut state = CollectorState::open(root, database_path)?;
     let startup = state.reconcile()?;
+    #[cfg(windows)]
+    let screenpipe = screenpipe_runtime_config(&mut state);
     let cancellation = WatchCancellation::new()?;
     let watcher = DirectoryWatcher::open(state.root(), true, 64 * 1024)
         .with_context(|| format!("watch directory {}", state.root().display()))?;
@@ -44,6 +58,10 @@ pub fn run(root: PathBuf, database_path: PathBuf, max_batches: Option<usize>) ->
     spawn_watcher(watcher, cancellation.clone(), events_tx.clone());
     spawn_personal_activity(cancellation.clone(), events_tx.clone());
     spawn_clipboard(cancellation.clone(), events_tx.clone());
+    #[cfg(windows)]
+    if let Some((client, cursor)) = screenpipe {
+        spawn_screenpipe(client, cursor, cancellation.clone(), events_tx.clone());
+    }
     spawn_ipc(pipe_server, cancellation.clone(), events_tx);
     if max_batches.is_none() {
         let signal = cancellation.clone();
@@ -63,7 +81,7 @@ pub fn run(root: PathBuf, database_path: PathBuf, max_batches: Option<usize>) ->
     );
     event_loop(
         &mut state,
-        clipboard_vault.as_ref(),
+        content_vault.as_ref(),
         &cancellation,
         events_rx,
         max_batches,
@@ -72,7 +90,7 @@ pub fn run(root: PathBuf, database_path: PathBuf, max_batches: Option<usize>) ->
 
 fn event_loop(
     state: &mut CollectorState,
-    _clipboard_vault: Option<&ContentVault>,
+    _content_vault: Option<&ContentVault>,
     cancellation: &WatchCancellation,
     events: Receiver<RuntimeEvent>,
     max_batches: Option<usize>,
@@ -80,6 +98,7 @@ fn event_loop(
     let mut completed_batches = 0usize;
     let personal_events = std::cell::Cell::new(0usize);
     let clipboard_events = std::cell::Cell::new(0usize);
+    let screenpipe_events = std::cell::Cell::new(0usize);
     loop {
         if cancellation.is_cancelled()? {
             break;
@@ -118,7 +137,7 @@ fn event_loop(
             }
             #[cfg(windows)]
             RuntimeEvent::Clipboard(observation) => {
-                let vault = _clipboard_vault.expect("Windows runtime opens the clipboard vault");
+                let vault = _content_vault.expect("Windows runtime opens the content vault");
                 if let Some(event) = clipboard_capture::event_from_snapshot(
                     vault,
                     observation.snapshot,
@@ -129,6 +148,29 @@ fn event_loop(
                     clipboard_events.set(clipboard_events.get() + 1);
                 }
             }
+            #[cfg(windows)]
+            RuntimeEvent::Screenpipe {
+                observation,
+                committed,
+            } => {
+                let vault = _content_vault.expect("Windows runtime opens the content vault");
+                let outcome = match screenpipe_capture::event_from_frame(
+                    vault,
+                    observation.frame,
+                    observation.screenshot,
+                    observation.observed_at,
+                ) {
+                    Ok(event) => match state.engine_mut().ingest_v2(&event) {
+                        Ok(_) => {
+                            screenpipe_events.set(screenpipe_events.get() + 1);
+                            Ok(())
+                        }
+                        Err(error) => Err(error.to_string()),
+                    },
+                    Err(error) => Err(error.to_string()),
+                };
+                let _ = committed.send(outcome);
+            }
             RuntimeEvent::Api { request, response } => {
                 let reply = handle_request(state.engine_mut(), request);
                 let _ = response.send(reply);
@@ -137,16 +179,17 @@ fn event_loop(
         }
     }
     println!(
-        "agent stopped: watcher_batches={completed_batches}; personal_events={}; clipboard_events={}; last_sequence={}",
+        "agent stopped: watcher_batches={completed_batches}; personal_events={}; clipboard_events={}; screenpipe_events={}; last_sequence={}",
         personal_events.get(),
         clipboard_events.get(),
+        screenpipe_events.get(),
         state.last_sequence()
     );
     Ok(())
 }
 
 #[cfg(windows)]
-fn open_clipboard_vault(database_path: &Path) -> Result<Option<ContentVault>> {
+fn open_content_vault(database_path: &Path) -> Result<Option<ContentVault>> {
     let data_root = database_path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -158,8 +201,56 @@ fn open_clipboard_vault(database_path: &Path) -> Result<Option<ContentVault>> {
 }
 
 #[cfg(not(windows))]
-fn open_clipboard_vault(_database_path: &Path) -> Result<Option<ContentVault>> {
+fn open_content_vault(_database_path: &Path) -> Result<Option<ContentVault>> {
     Ok(None)
+}
+
+#[cfg(windows)]
+fn screenpipe_runtime_config(
+    state: &mut CollectorState,
+) -> Option<(ScreenpipeClient, Option<ScreenpipeCursor>)> {
+    let api_key = std::env::var("SCREENPIPE_LOCAL_API_KEY")
+        .or_else(|_| std::env::var("SCREENPIPE_API_KEY"))
+        .ok()?;
+    let base_url = std::env::var("SCREENPIPE_LOCAL_API_URL")
+        .unwrap_or_else(|_| "http://localhost:3030".into());
+    let client = match ScreenpipeClient::new(&base_url, api_key) {
+        Ok(client) => client,
+        Err(error) => {
+            eprintln!("screenpipe adapter disabled: {error}");
+            return None;
+        }
+    };
+    let cursor = match state
+        .engine_mut()
+        .repository()
+        .latest_raw_event_envelope_for_source(SCREENPIPE_SOURCE, PERSONAL_SCOPE)
+    {
+        Ok(Some(json)) => match serde_json::from_str::<EventEnvelopeV2>(&json) {
+            Ok(event) => match (event.source_sequence, event.occurred_at) {
+                (Some(frame_id), Some(captured_at)) => Some(ScreenpipeCursor {
+                    frame_id,
+                    captured_at,
+                }),
+                _ => {
+                    eprintln!("screenpipe adapter disabled: persisted cursor event is incomplete");
+                    return None;
+                }
+            },
+            Err(error) => {
+                eprintln!(
+                    "screenpipe adapter disabled: persisted cursor event is invalid: {error}"
+                );
+                return None;
+            }
+        },
+        Ok(None) => None,
+        Err(error) => {
+            eprintln!("screenpipe adapter disabled: cannot read persisted cursor: {error}");
+            return None;
+        }
+    };
+    Some((client, cursor))
 }
 
 fn spawn_watcher(
@@ -257,9 +348,108 @@ fn spawn_clipboard(cancellation: WatchCancellation, events: Sender<RuntimeEvent>
 fn spawn_clipboard(_cancellation: WatchCancellation, _events: Sender<RuntimeEvent>) {}
 
 #[cfg(windows)]
+fn spawn_screenpipe(
+    client: ScreenpipeClient,
+    mut cursor: Option<ScreenpipeCursor>,
+    cancellation: WatchCancellation,
+    events: Sender<RuntimeEvent>,
+) {
+    thread::spawn(move || {
+        let mut last_error: Option<String> = None;
+        loop {
+            if cancellation.is_cancelled().unwrap_or(true) {
+                break;
+            }
+            let now = OffsetDateTime::now_utc();
+            let frames = match client.fetch_frames_since(cursor.as_ref(), now) {
+                Ok(frames) => frames,
+                Err(error) => {
+                    report_screenpipe_error(&mut last_error, &error);
+                    thread::sleep(Duration::from_secs(5));
+                    continue;
+                }
+            };
+
+            let mut batch_failed = false;
+            for frame in frames {
+                if cancellation.is_cancelled().unwrap_or(true) {
+                    return;
+                }
+                let screenshot = match client.fetch_frame_png(frame.frame_id) {
+                    Ok(Some(bytes)) => screenpipe_capture::ScreenpipeScreenshot::Png(bytes),
+                    Ok(None) => screenpipe_capture::ScreenpipeScreenshot::NotFound,
+                    Err(ScreenpipeError::ResponseTooLarge { .. }) => {
+                        screenpipe_capture::ScreenpipeScreenshot::OmittedTooLarge
+                    }
+                    Err(error) => {
+                        report_screenpipe_error(&mut last_error, &error);
+                        batch_failed = true;
+                        break;
+                    }
+                };
+                let next_cursor = ScreenpipeCursor::from_frame(&frame);
+                let observation = ScreenpipeObservation {
+                    frame,
+                    screenshot,
+                    observed_at: OffsetDateTime::now_utc(),
+                };
+                let (committed_tx, committed_rx) = mpsc::channel();
+                if events
+                    .send(RuntimeEvent::Screenpipe {
+                        observation: Box::new(observation),
+                        committed: committed_tx,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+                match committed_rx.recv_timeout(Duration::from_secs(10)) {
+                    Ok(Ok(())) => {
+                        cursor = Some(next_cursor);
+                        if last_error.take().is_some() {
+                            eprintln!("screenpipe adapter: sampling recovered");
+                        }
+                    }
+                    Ok(Err(message)) => {
+                        if last_error.as_deref() != Some(message.as_str()) {
+                            eprintln!("screenpipe adapter: event commit failed: {message}");
+                            last_error = Some(message);
+                        }
+                        batch_failed = true;
+                        break;
+                    }
+                    Err(_) => return,
+                }
+            }
+            if batch_failed {
+                thread::sleep(Duration::from_secs(5));
+            } else {
+                thread::sleep(Duration::from_secs(2));
+            }
+        }
+    });
+}
+
+#[cfg(windows)]
+fn report_screenpipe_error(last_error: &mut Option<String>, error: &ScreenpipeError) {
+    let message = error.to_string();
+    if last_error.as_deref() != Some(message.as_str()) {
+        eprintln!("screenpipe adapter: {message}");
+        *last_error = Some(message);
+    }
+}
+
+#[cfg(windows)]
 struct ClipboardObservation {
     observed_at: OffsetDateTime,
     snapshot: ClipboardSnapshot,
+}
+
+#[cfg(windows)]
+struct ScreenpipeObservation {
+    frame: ScreenpipeFrame,
+    screenshot: screenpipe_capture::ScreenpipeScreenshot,
+    observed_at: OffsetDateTime,
 }
 
 fn spawn_ipc(
@@ -339,6 +529,11 @@ enum RuntimeEvent {
     Personal(Box<EventEnvelopeV2>),
     #[cfg(windows)]
     Clipboard(Box<ClipboardObservation>),
+    #[cfg(windows)]
+    Screenpipe {
+        observation: Box<ScreenpipeObservation>,
+        committed: Sender<std::result::Result<(), String>>,
+    },
     Api {
         request: LocalApiRequest,
         response: Sender<LocalApiResponse>,
