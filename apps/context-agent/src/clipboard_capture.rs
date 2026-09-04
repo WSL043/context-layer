@@ -1,8 +1,6 @@
 use anyhow::Result;
 use context_content_vault::ContentVault;
-use context_contracts::{
-    ContentRef, EventEnvelopeV2, RetrievalClass, SensitivityClass,
-};
+use context_contracts::{ContentRef, EventEnvelopeV2, RetrievalClass, SensitivityClass};
 use context_platform_windows::ClipboardSnapshot;
 use serde_json::json;
 use time::OffsetDateTime;
