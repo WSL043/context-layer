@@ -3,6 +3,7 @@ use std::{collections::BTreeMap, io::Read, net::IpAddr, time::Duration as StdDur
 use reqwest::{
     StatusCode,
     blocking::{Client, Response},
+    redirect::Policy,
 };
 use serde::Deserialize;
 use thiserror::Error;
@@ -78,6 +79,8 @@ impl ScreenpipeClient {
             return Err(ScreenpipeError::MissingApiKey);
         }
         let client = Client::builder()
+            .no_proxy()
+            .redirect(Policy::none())
             .connect_timeout(StdDuration::from_secs(1))
             .timeout(StdDuration::from_secs(8))
             .build()?;
