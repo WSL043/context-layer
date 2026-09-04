@@ -1,5 +1,5 @@
 use context_contracts::{
-    ContentRef, EventEnvelope, EventEnvelopeV2, EvidenceDescriptor, EventPayload, RetrievalClass,
+    ContentRef, EventEnvelope, EventEnvelopeV2, EventPayload, EvidenceDescriptor, RetrievalClass,
     ScopeId, SensitivityClass, SourceId,
 };
 use serde_json::Value;
@@ -94,10 +94,7 @@ pub struct RawTimelinePage {
 pub trait TimelineRepository {
     type Error: std::error::Error + Send + Sync + 'static;
 
-    fn query_raw_timeline(
-        &self,
-        query: &RawTimelineQuery,
-    ) -> Result<RawTimelinePage, Self::Error>;
+    fn query_raw_timeline(&self, query: &RawTimelineQuery) -> Result<RawTimelinePage, Self::Error>;
 }
 
 #[derive(Debug, Error)]
@@ -222,12 +219,13 @@ fn decode_visible_entry<E: std::error::Error + 'static>(
 ) -> Result<Option<TimelineEntry>, RetrievalError<E>> {
     match record.schema_version {
         1 => {
-            let envelope: EventEnvelope = serde_json::from_str(&record.envelope_json).map_err(|error| {
-                RetrievalError::MalformedRawEvent {
-                    event_id: record.event_id,
-                    message: error.to_string(),
-                }
-            })?;
+            let envelope: EventEnvelope =
+                serde_json::from_str(&record.envelope_json).map_err(|error| {
+                    RetrievalError::MalformedRawEvent {
+                        event_id: record.event_id,
+                        message: error.to_string(),
+                    }
+                })?;
             if !sensitivity_allowed(envelope.sensitivity, grant.max_event_sensitivity) {
                 return Ok(None);
             }
@@ -273,11 +271,12 @@ fn decode_visible_entry<E: std::error::Error + 'static>(
                 return Ok(None);
             }
             let visible_refs = filter_refs(&envelope.content_refs, grant.max_content_retrieval);
-            let payload = if grant.include_payload && visible_refs.len() == envelope.content_refs.len() {
-                Some(envelope.payload.clone())
-            } else {
-                None
-            };
+            let payload =
+                if grant.include_payload && visible_refs.len() == envelope.content_refs.len() {
+                    Some(envelope.payload.clone())
+                } else {
+                    None
+                };
             Ok(Some(TimelineEntry {
                 event_id: envelope.event_id,
                 schema_version: envelope.envelope_version,
@@ -312,7 +311,9 @@ fn refs_from_v1_payload(payload: &EventPayload) -> Vec<ContentRef> {
 
 fn filter_refs(refs: &[ContentRef], maximum: RetrievalClass) -> Vec<ContentRef> {
     refs.iter()
-        .filter(|reference| retrieval_class_rank(reference.retrieval_class) <= retrieval_class_rank(maximum))
+        .filter(|reference| {
+            retrieval_class_rank(reference.retrieval_class) <= retrieval_class_rank(maximum)
+        })
         .cloned()
         .collect()
 }
