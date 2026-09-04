@@ -1,0 +1,15 @@
+{
+  "type": "active_page_changed",
+  "protocol_version": 3,
+  "browser": "chromium",
+  "observation_id": "018bcfe5-6800-7000-8000-000000000002",
+  "source_sequence": 8,
+  "tab_id": 12,
+  "window_id": 3,
+  "url": "https://www.google.com/search?q=context+layer",
+  "title": "context layer - Google Search",
+  "pinned": false,
+  "window_focused": true,
+  "trigger": "tab_activated",
+  "observed_at": "2026-09-01T00:00:01Z"
+}
