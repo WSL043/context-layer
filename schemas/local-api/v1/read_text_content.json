@@ -1,0 +1,10 @@
+{
+  "request_id": "018c4a15-6f80-7000-8000-000000000201",
+  "protocol_version": 1,
+  "command": {
+    "type": "read_text_content",
+    "authorization": "0123456789abcdef0123456789abcdef0123456789abcdef",
+    "event_id": "018c4a15-6f80-7000-8000-000000000202",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}

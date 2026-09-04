@@ -7,6 +7,8 @@ use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
+mod content_access;
+
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("sqlite error: {0}")]
