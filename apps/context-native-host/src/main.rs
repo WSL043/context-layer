@@ -336,7 +336,7 @@ fn self_check() -> Result<()> {
     let (bridge_version, request) = request_from_browser(decoded)?;
     assert_eq!(bridge_version, BROWSER_PROTOCOL_V2);
     assert!(matches!(
-        request.command,
+        &request.command,
         LocalApiCommand::SubmitEvent { .. }
     ));
     println!("native-host self-check: framing and event validation passed");
@@ -423,7 +423,7 @@ mod tests {
         assert_eq!(bridge_version, BROWSER_PROTOCOL_V2);
         assert_eq!(request.protocol_version, LOCAL_API_VERSION);
         assert!(matches!(
-            request.command,
+            &request.command,
             LocalApiCommand::SubmitEvent { .. }
         ));
         let LocalApiCommand::SubmitEvent { event } = request.command else {
@@ -485,15 +485,11 @@ mod tests {
     #[test]
     fn active_page_requires_bridge_v2_and_web_url() {
         assert!(
-            request_from_browser(active_page(
-                BROWSER_PROTOCOL_V1,
-                "https://example.test/"
-            ))
-            .is_err()
+            request_from_browser(active_page(BROWSER_PROTOCOL_V1, "https://example.test/"))
+                .is_err()
         );
         assert!(
-            request_from_browser(active_page(BROWSER_PROTOCOL_V2, "chrome://settings/"))
-                .is_err()
+            request_from_browser(active_page(BROWSER_PROTOCOL_V2, "chrome://settings/")).is_err()
         );
     }
 
