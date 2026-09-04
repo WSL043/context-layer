@@ -1,26 +1,37 @@
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
     thread,
     time::Duration,
 };
 
 use anyhow::{Context, Result, anyhow};
+use context_content_vault::ContentVault;
 #[cfg(windows)]
 use context_contracts::EventEnvelopeV2;
 use context_contracts::{LocalApiRequest, LocalApiResponse};
 use context_local_ipc::{NamedPipeServer, read_frame, write_frame};
+#[cfg(windows)]
+use context_platform_windows::{ClipboardSnapshot, clipboard_snapshot_if_changed};
 use context_platform_windows::{DirectoryWatcher, WatchCancellation, WatchOutcome};
 #[cfg(windows)]
 use time::OffsetDateTime;
 
 use crate::{collector::CollectorState, handle_request};
 
+#[cfg(any(windows, test))]
+#[path = "clipboard_capture.rs"]
+mod clipboard_capture;
+
 #[cfg(windows)]
 #[path = "personal.rs"]
 mod personal;
 
+#[cfg(windows)]
+const MAX_CLIPBOARD_RAW_UTF16_BYTES: usize = 8 * 1024 * 1024;
+
 pub fn run(root: PathBuf, database_path: PathBuf, max_batches: Option<usize>) -> Result<()> {
+    let clipboard_vault = open_clipboard_vault(&database_path)?;
     let mut state = CollectorState::open(root, database_path)?;
     let startup = state.reconcile()?;
     let cancellation = WatchCancellation::new()?;
@@ -32,6 +43,7 @@ pub fn run(root: PathBuf, database_path: PathBuf, max_batches: Option<usize>) ->
 
     spawn_watcher(watcher, cancellation.clone(), events_tx.clone());
     spawn_personal_activity(cancellation.clone(), events_tx.clone());
+    spawn_clipboard(cancellation.clone(), events_tx.clone());
     spawn_ipc(pipe_server, cancellation.clone(), events_tx);
     if max_batches.is_none() {
         let signal = cancellation.clone();
@@ -49,17 +61,25 @@ pub fn run(root: PathBuf, database_path: PathBuf, max_batches: Option<usize>) ->
         startup.issues,
         state.last_sequence()
     );
-    event_loop(&mut state, &cancellation, events_rx, max_batches)
+    event_loop(
+        &mut state,
+        clipboard_vault.as_ref(),
+        &cancellation,
+        events_rx,
+        max_batches,
+    )
 }
 
 fn event_loop(
     state: &mut CollectorState,
+    _clipboard_vault: Option<&ContentVault>,
     cancellation: &WatchCancellation,
     events: Receiver<RuntimeEvent>,
     max_batches: Option<usize>,
 ) -> Result<()> {
     let mut completed_batches = 0usize;
     let personal_events = std::cell::Cell::new(0usize);
+    let clipboard_events = std::cell::Cell::new(0usize);
     loop {
         if cancellation.is_cancelled()? {
             break;
@@ -96,6 +116,19 @@ fn event_loop(
                 state.engine_mut().ingest_v2(&event)?;
                 personal_events.set(personal_events.get() + 1);
             }
+            #[cfg(windows)]
+            RuntimeEvent::Clipboard(observation) => {
+                let vault = _clipboard_vault.expect("Windows runtime opens the clipboard vault");
+                if let Some(event) = clipboard_capture::event_from_snapshot(
+                    vault,
+                    observation.snapshot,
+                    observation.observed_at,
+                    MAX_CLIPBOARD_RAW_UTF16_BYTES,
+                )? {
+                    state.engine_mut().ingest_v2(&event)?;
+                    clipboard_events.set(clipboard_events.get() + 1);
+                }
+            }
             RuntimeEvent::Api { request, response } => {
                 let reply = handle_request(state.engine_mut(), request);
                 let _ = response.send(reply);
@@ -104,11 +137,29 @@ fn event_loop(
         }
     }
     println!(
-        "agent stopped: watcher_batches={completed_batches}; personal_events={}; last_sequence={}",
+        "agent stopped: watcher_batches={completed_batches}; personal_events={}; clipboard_events={}; last_sequence={}",
         personal_events.get(),
+        clipboard_events.get(),
         state.last_sequence()
     );
     Ok(())
+}
+
+#[cfg(windows)]
+fn open_clipboard_vault(database_path: &Path) -> Result<Option<ContentVault>> {
+    let data_root = database_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let vault_root = data_root.join("vault").join("blobs");
+    Ok(Some(ContentVault::open(&vault_root).with_context(
+        || format!("open content vault {}", vault_root.display()),
+    )?))
+}
+
+#[cfg(not(windows))]
+fn open_clipboard_vault(_database_path: &Path) -> Result<Option<ContentVault>> {
+    Ok(None)
 }
 
 fn spawn_watcher(
@@ -156,6 +207,60 @@ fn spawn_personal_activity(cancellation: WatchCancellation, events: Sender<Runti
 
 #[cfg(not(windows))]
 fn spawn_personal_activity(_cancellation: WatchCancellation, _events: Sender<RuntimeEvent>) {}
+
+#[cfg(windows)]
+fn spawn_clipboard(cancellation: WatchCancellation, events: Sender<RuntimeEvent>) {
+    thread::spawn(move || {
+        let mut last_sequence = None;
+        let mut last_error: Option<String> = None;
+        loop {
+            if cancellation.is_cancelled().unwrap_or(true) {
+                break;
+            }
+
+            match clipboard_snapshot_if_changed(last_sequence, MAX_CLIPBOARD_RAW_UTF16_BYTES) {
+                Ok(Some(snapshot)) => {
+                    if last_error.take().is_some() {
+                        eprintln!("clipboard collector: sampling recovered");
+                    }
+                    last_sequence = Some(snapshot.sequence());
+                    if !matches!(snapshot, ClipboardSnapshot::NonText { .. }) {
+                        let observation = ClipboardObservation {
+                            observed_at: OffsetDateTime::now_utc(),
+                            snapshot,
+                        };
+                        if events
+                            .send(RuntimeEvent::Clipboard(Box::new(observation)))
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => {
+                    let message = error.to_string();
+                    if last_error.as_deref() != Some(message.as_str()) {
+                        eprintln!("clipboard collector: sampling failed: {message}");
+                        last_error = Some(message);
+                    }
+                }
+            }
+
+            thread::sleep(Duration::from_millis(250));
+        }
+    });
+}
+
+#[cfg(not(windows))]
+fn spawn_clipboard(_cancellation: WatchCancellation, _events: Sender<RuntimeEvent>) {}
+
+#[cfg(windows)]
+struct ClipboardObservation {
+    observed_at: OffsetDateTime,
+    snapshot: ClipboardSnapshot,
+}
 
 fn spawn_ipc(
     first_server: NamedPipeServer,
@@ -232,6 +337,8 @@ enum RuntimeEvent {
     Watch(std::io::Result<WatchOutcome>),
     #[cfg(windows)]
     Personal(Box<EventEnvelopeV2>),
+    #[cfg(windows)]
+    Clipboard(Box<ClipboardObservation>),
     Api {
         request: LocalApiRequest,
         response: Sender<LocalApiResponse>,
