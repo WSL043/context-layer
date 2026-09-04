@@ -2,6 +2,8 @@ export const HOST_NAME = "com.contextlayer.browser";
 export const PROTOCOL_VERSION = 2;
 export const LEGACY_PROTOCOL_VERSION = 1;
 
+const encoder = new TextEncoder();
+
 export function downloadCompleted(
   item,
   downloadId,
@@ -22,6 +24,7 @@ export function downloadCompleted(
   }
   const url = item.finalUrl || item.url;
   validateWebUrl(url);
+  if (item.referrer) validateWebUrl(item.referrer);
   return {
     type: "download_completed",
     protocol_version: PROTOCOL_VERSION,
@@ -53,8 +56,8 @@ export function activePageChanged(
     throw new Error("active-page window id must be a non-negative safe integer");
   }
   validateWebUrl(page.url);
-  if (typeof page.title !== "string" || page.title.length > 4096) {
-    throw new Error("active-page title must be at most 4096 characters");
+  if (typeof page.title !== "string" || encoder.encode(page.title).length > 4096) {
+    throw new Error("active-page title must be at most 4096 UTF-8 bytes");
   }
   if (!["startup", "installed", "tab_activated", "page_updated", "window_focused", "window_blurred"].includes(trigger)) {
     throw new Error("unsupported active-page trigger");
@@ -102,11 +105,25 @@ export function responseAccepted(response, expectedProtocolVersion = PROTOCOL_VE
 }
 
 export function isWebUrl(value) {
-  return typeof value === "string" && /^https?:\/\//i.test(value);
+  try {
+    validateWebUrl(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function validateWebUrl(value) {
-  if (!isWebUrl(value) || value.length > 16_384) {
-    throw new Error("URL must use HTTP or HTTPS and be at most 16384 characters");
+  if (typeof value !== "string" || encoder.encode(value).length > 16_384) {
+    throw new Error("URL must be at most 16384 UTF-8 bytes");
+  }
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("URL must be valid HTTP or HTTPS");
+  }
+  if (!/^https?:$/i.test(parsed.protocol) || !parsed.hostname) {
+    throw new Error("URL must use HTTP or HTTPS and include a host");
   }
 }
