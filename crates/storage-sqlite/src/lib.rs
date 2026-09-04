@@ -21,6 +21,8 @@ pub enum StorageError {
     InvalidUuid(#[from] uuid::Error),
     #[error("database schema version {actual} is newer than supported version {supported}")]
     UnsupportedDatabaseVersion { actual: u32, supported: u32 },
+    #[error("timestamp year {year} cannot be represented in sortable UTC key")]
+    TimestampOutOfSortableRange { year: i32 },
 }
 
 pub struct SqliteRepository {
@@ -179,18 +181,20 @@ impl EventRepository for SqliteRepository {
         event: &EventEnvelope,
         commands: &[ProjectionCommand],
     ) -> Result<IngestOutcome, Self::Error> {
+        let observed_key = format_sort_key(event.observed_at)?;
         let tx = self.connection.transaction()?;
         let inserted = tx.execute(
             "INSERT OR IGNORE INTO raw_event (
-                event_id, schema_version, source, source_sequence, observed_at,
+                event_id, schema_version, source, source_sequence, observed_at, observed_key,
                 ingested_at, scope_id, correlation_id, sensitivity, envelope_json
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 event.event_id.to_string(),
                 event.schema_version,
                 event.source.0,
                 event.source_sequence,
                 format_time(event.observed_at)?,
+                observed_key,
                 format_time(event.ingested_at)?,
                 event.scope_id.0,
                 event.correlation_id.map(|value| value.to_string()),
@@ -500,7 +504,24 @@ fn format_time(value: OffsetDateTime) -> Result<String, time::error::Format> {
     value.format(&Rfc3339)
 }
 
-const CURRENT_DATABASE_VERSION: u32 = 3;
+fn format_sort_key(value: OffsetDateTime) -> Result<String, StorageError> {
+    let utc = value.to_offset(time::UtcOffset::UTC);
+    let year = utc.year();
+    if !(0..=9999).contains(&year) {
+        return Err(StorageError::TimestampOutOfSortableRange { year });
+    }
+    Ok(format!(
+        "{year:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:09}Z",
+        utc.month() as u8,
+        utc.day(),
+        utc.hour(),
+        utc.minute(),
+        utc.second(),
+        utc.nanosecond(),
+    ))
+}
+
+const CURRENT_DATABASE_VERSION: u32 = 4;
 
 fn migrate(connection: &mut Connection) -> Result<(), StorageError> {
     let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -528,8 +549,38 @@ fn migrate(connection: &mut Connection) -> Result<(), StorageError> {
     if version == 2 {
         let tx = connection.transaction()?;
         tx.execute_batch(SCHEMA_V3)?;
+        tx.pragma_update(None, "user_version", 3)?;
+        tx.commit()?;
+        version = 3;
+    }
+    if version == 3 {
+        let tx = connection.transaction()?;
+        tx.execute_batch("ALTER TABLE raw_event ADD COLUMN observed_key TEXT;")?;
+        backfill_observed_keys(&tx)?;
+        tx.execute_batch(SCHEMA_V4)?;
         tx.pragma_update(None, "user_version", CURRENT_DATABASE_VERSION)?;
         tx.commit()?;
+    }
+    Ok(())
+}
+
+fn backfill_observed_keys(tx: &Transaction<'_>) -> Result<(), StorageError> {
+    let rows = {
+        let mut statement =
+            tx.prepare("SELECT event_id, observed_at FROM raw_event WHERE observed_key IS NULL")?;
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for (event_id, observed_at) in rows {
+        let observed_at = OffsetDateTime::parse(&observed_at, &Rfc3339)?;
+        let observed_key = format_sort_key(observed_at)?;
+        tx.execute(
+            "UPDATE raw_event SET observed_key = ?2 WHERE event_id = ?1",
+            params![event_id, observed_key],
+        )?;
     }
     Ok(())
 }
@@ -630,6 +681,18 @@ CREATE TABLE collector_checkpoint (
 const SCHEMA_V3: &str = r#"
 CREATE INDEX IF NOT EXISTS raw_event_scope_observed_cursor
 ON raw_event(scope_id, observed_at DESC, event_id DESC);
+"#;
+
+const SCHEMA_V4: &str = r#"
+DROP INDEX IF EXISTS raw_event_scope_observed_cursor;
+CREATE INDEX IF NOT EXISTS raw_event_scope_observed_key_cursor
+ON raw_event(scope_id, observed_key DESC, event_id DESC);
+CREATE TRIGGER IF NOT EXISTS raw_event_observed_key_required
+BEFORE INSERT ON raw_event
+WHEN NEW.observed_key IS NULL
+BEGIN
+  SELECT RAISE(ABORT, 'raw_event.observed_key is required');
+END;
 "#;
 
 #[cfg(test)]
