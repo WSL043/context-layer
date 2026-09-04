@@ -19,6 +19,6 @@ A metadata-only grant is the conservative baseline: it can see only `Metadata` e
 
 The storage layer performs only stable raw-row scanning. Policy lives in the core retrieval engine so SQLite, future import stores, and other backends cannot drift into different authorization semantics.
 
-The first database change is only a versioned index on `(scope_id, observed_at, event_id)` to support stable keyset scans. No semantic projection or denormalized personal-data index is introduced yet.
+The first database change is only a versioned index on `(scope_id, observed_at, event_id)` to support stable keyset scans. No semantic projection or denormalized personal-data index is introduced yet. The index is introduced through the same forward-only SQLite migration chain as the rest of the database schema; retrieval does not create lazy or hidden tables/indexes at query time.
 
 This slice deliberately does **not** expose timeline querying through `LocalApiCommand`. Before IPC reads are enabled, the caller/capability identity and grant assignment need an explicit design so an arbitrary same-user process cannot simply ask the agent for all Sensitive evidence.
