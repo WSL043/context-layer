@@ -175,7 +175,7 @@ impl ScreenpipeClient {
         loop {
             if collected.len() >= MAX_RESULTS_PER_SOURCE {
                 return Err(ScreenpipeError::TooManyResults {
-                    source: source.as_str(),
+                    content_type: source.as_str(),
                     limit: MAX_RESULTS_PER_SOURCE,
                 });
             }
@@ -400,8 +400,11 @@ pub enum ScreenpipeError {
         endpoint: &'static str,
         limit: usize,
     },
-    #[error("screenpipe {source} search exceeded the bounded {limit}-result poll")]
-    TooManyResults { source: &'static str, limit: usize },
+    #[error("screenpipe {content_type} search exceeded the bounded {limit}-result poll")]
+    TooManyResults {
+        content_type: &'static str,
+        limit: usize,
+    },
     #[error("screenpipe frame IDs appear to have reset below persisted frame {last_frame_id}")]
     SourceCursorReset { last_frame_id: u64 },
     #[error("screenpipe HTTP request failed: {0}")]
