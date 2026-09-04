@@ -5,7 +5,7 @@ use rusqlite::Connection;
 use uuid::Uuid;
 
 #[test]
-fn version_two_database_migrates_to_v3_retrieval_index() {
+fn version_two_database_migrates_through_sortable_retrieval_index() {
     let path = std::env::temp_dir().join(format!("context-retrieval-v3-{}.db", Uuid::now_v7()));
     let connection = Connection::open(&path).unwrap();
     connection
@@ -46,11 +46,11 @@ fn version_two_database_migrates_to_v3_retrieval_index() {
     let version: u32 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
     let index_count: u32 = connection
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master
-             WHERE type = 'index' AND name = 'raw_event_scope_observed_cursor'",
+             WHERE type = 'index' AND name = 'raw_event_scope_observed_key_cursor'",
             [],
             |row| row.get(0),
         )

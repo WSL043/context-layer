@@ -47,18 +47,20 @@ impl SqliteRepository {
 
 impl RawEventRepository for SqliteRepository {
     fn append_raw_v2(&mut self, event: &EventEnvelopeV2) -> Result<IngestOutcome, Self::Error> {
+        let observed_key = format_sort_key(event.observed_at)?;
         let tx = self.connection.transaction()?;
         let inserted = tx.execute(
             "INSERT OR IGNORE INTO raw_event (
-                event_id, schema_version, source, source_sequence, observed_at,
+                event_id, schema_version, source, source_sequence, observed_at, observed_key,
                 ingested_at, scope_id, correlation_id, sensitivity, envelope_json
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 event.event_id.to_string(),
                 event.envelope_version,
                 event.source.0.as_str(),
                 event.source_sequence,
                 format_time(event.observed_at)?,
+                observed_key,
                 format_time(event.ingested_at)?,
                 event.scope_id.0.as_str(),
                 event.correlation_id.map(|value| value.to_string()),
