@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, net::IpAddr, time::Duration as StdDuration};
+use std::{
+    collections::BTreeMap,
+    io::Read,
+    net::IpAddr,
+    time::Duration as StdDuration,
+};
 
 use reqwest::{
     StatusCode,
@@ -13,6 +18,7 @@ const SEARCH_PAGE_SIZE: usize = 20;
 const MAX_RESULTS_PER_SOURCE: usize = 20_000;
 const INITIAL_BACKFILL: Duration = Duration::minutes(5);
 const CURSOR_OVERLAP: Duration = Duration::seconds(2);
+const MAX_SEARCH_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SCREENSHOT_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,23 +159,11 @@ impl ScreenpipeClient {
             return Ok(None);
         }
         let response = require_success(response, "frames")?;
-        if response
-            .content_length()
-            .is_some_and(|length| length > MAX_SCREENSHOT_BYTES as u64)
-        {
-            return Err(ScreenpipeError::ResponseTooLarge {
-                endpoint: "frames",
-                limit: MAX_SCREENSHOT_BYTES,
-            });
-        }
-        let bytes = response.bytes()?;
-        if bytes.len() > MAX_SCREENSHOT_BYTES {
-            return Err(ScreenpipeError::ResponseTooLarge {
-                endpoint: "frames",
-                limit: MAX_SCREENSHOT_BYTES,
-            });
-        }
-        Ok(Some(bytes.to_vec()))
+        Ok(Some(read_bounded(
+            response,
+            "frames",
+            MAX_SCREENSHOT_BYTES,
+        )?))
     }
 
     fn search_text_source(
@@ -215,7 +209,8 @@ impl ScreenpipeClient {
                 return Err(ScreenpipeError::Authentication);
             }
             let response = require_success(response, "search")?;
-            let page: SearchResponse = response.json()?;
+            let body = read_bounded(response, "search", MAX_SEARCH_RESPONSE_BYTES)?;
+            let page: SearchResponse = serde_json::from_slice(&body)?;
             let page_len = page.data.len();
             for item in page.data {
                 if let Some(frame) = item.into_frame(source)? {
@@ -248,7 +243,8 @@ fn merge_candidate(existing: &mut ScreenpipeFrame, candidate: ScreenpipeFrame) {
     let existing_has_text = !existing.text.trim().is_empty();
     let candidate_has_text = !candidate.text.trim().is_empty();
     if (!existing_has_text && candidate_has_text)
-        || (candidate_has_text && candidate.text_source.priority() > existing.text_source.priority())
+        || (candidate_has_text
+            && candidate.text_source.priority() > existing.text_source.priority())
     {
         existing.text = candidate.text;
         existing.text_source = candidate.text_source;
@@ -295,7 +291,10 @@ fn validate_loopback_base_url(value: &str) -> Result<Url, ScreenpipeError> {
     Ok(url)
 }
 
-fn require_success(response: Response, endpoint: &'static str) -> Result<Response, ScreenpipeError> {
+fn require_success(
+    response: Response,
+    endpoint: &'static str,
+) -> Result<Response, ScreenpipeError> {
     if response.status().is_success() {
         return Ok(response);
     }
@@ -303,6 +302,27 @@ fn require_success(response: Response, endpoint: &'static str) -> Result<Respons
         endpoint,
         status: response.status().as_u16(),
     })
+}
+
+fn read_bounded(
+    response: Response,
+    endpoint: &'static str,
+    limit: usize,
+) -> Result<Vec<u8>, ScreenpipeError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        return Err(ScreenpipeError::ResponseTooLarge { endpoint, limit });
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(limit.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(ScreenpipeError::ResponseTooLarge { endpoint, limit });
+    }
+    Ok(bytes)
 }
 
 #[derive(Deserialize)]
@@ -323,7 +343,10 @@ struct SearchItem {
 }
 
 impl SearchItem {
-    fn into_frame(self, source: ScreenTextSource) -> Result<Option<ScreenpipeFrame>, ScreenpipeError> {
+    fn into_frame(
+        self,
+        source: ScreenTextSource,
+    ) -> Result<Option<ScreenpipeFrame>, ScreenpipeError> {
         let Some(frame_id) = value_to_u64(self.content.frame_id.as_ref()) else {
             return Ok(None);
         };
@@ -378,13 +401,20 @@ pub enum ScreenpipeError {
     #[error("screenpipe {endpoint} endpoint returned HTTP {status}")]
     ApiStatus { endpoint: &'static str, status: u16 },
     #[error("screenpipe {endpoint} response exceeded {limit} bytes")]
-    ResponseTooLarge { endpoint: &'static str, limit: usize },
+    ResponseTooLarge {
+        endpoint: &'static str,
+        limit: usize,
+    },
     #[error("screenpipe {source} search exceeded the bounded {limit}-result poll")]
     TooManyResults { source: &'static str, limit: usize },
     #[error("screenpipe frame IDs appear to have reset below persisted frame {last_frame_id}")]
     SourceCursorReset { last_frame_id: u64 },
     #[error("screenpipe HTTP request failed: {0}")]
     Http(#[from] reqwest::Error),
+    #[error("screenpipe response read failed: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("screenpipe JSON response was invalid: {0}")]
+    Json(#[from] serde_json::Error),
     #[error("screenpipe timestamp formatting failed: {0}")]
     TimestampFormat(#[from] time::error::Format),
     #[error("screenpipe timestamp parsing failed: {0}")]
@@ -431,7 +461,10 @@ mod tests {
     #[test]
     fn nonempty_ocr_can_fill_an_empty_accessibility_result() {
         let mut existing = frame(7, ScreenTextSource::Accessibility, "");
-        merge_candidate(&mut existing, frame(7, ScreenTextSource::Ocr, "visible text"));
+        merge_candidate(
+            &mut existing,
+            frame(7, ScreenTextSource::Ocr, "visible text"),
+        );
         assert_eq!(existing.text, "visible text");
         assert_eq!(existing.text_source, ScreenTextSource::Ocr);
     }
