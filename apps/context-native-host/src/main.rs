@@ -148,7 +148,7 @@ fn request_from_browser(message: BrowserMessage) -> Result<(u16, LocalApiRequest
             BROWSER_PROTOCOL_V2
         );
     }
-    if matches!(message, BrowserMessage::ActivePageChanged { .. })
+    if matches!(&message, BrowserMessage::ActivePageChanged { .. })
         && protocol_version != BROWSER_PROTOCOL_V2
     {
         bail!("active-page observations require browser protocol version 2");
@@ -174,9 +174,14 @@ fn request_from_browser(message: BrowserMessage) -> Result<(u16, LocalApiRequest
             if !is_absolute_windows_path(&final_path) {
                 bail!("download final_path must be an absolute Windows path");
             }
+            let scope = if protocol_version == BROWSER_PROTOCOL_V1 {
+                "scope.downloads"
+            } else {
+                "scope.personal"
+            };
             let mut event = EventEnvelope::observed(
                 format!("browser.{browser}"),
-                "scope.downloads",
+                scope,
                 observed_at,
                 EventPayload::BrowserDownloadObserved {
                     download_id,
@@ -421,6 +426,10 @@ mod tests {
             request.command,
             LocalApiCommand::SubmitEvent { .. }
         ));
+        let LocalApiCommand::SubmitEvent { event } = request.command else {
+            unreachable!();
+        };
+        assert_eq!(event.scope_id.0, "scope.personal");
     }
 
     #[test]
@@ -521,5 +530,22 @@ mod tests {
             Uuid::parse_str("018bcfe5-6800-7000-8000-000000000001").unwrap()
         );
         assert_eq!(event.source_sequence, Some(7));
+        assert_eq!(event.scope_id.0, "scope.downloads");
+    }
+
+    #[test]
+    fn checked_in_browser_v2_active_page_fixture_is_accepted() {
+        let fixture = include_str!("../../../schemas/browser/v2/active_page_changed.json");
+        let message: BrowserMessage = serde_json::from_str(fixture).unwrap();
+        let (bridge_version, request) = request_from_browser(message).unwrap();
+        assert_eq!(bridge_version, BROWSER_PROTOCOL_V2);
+        let LocalApiCommand::SubmitEventV2 { event } = request.command else {
+            unreachable!();
+        };
+        assert_eq!(
+            event.event_id,
+            Uuid::parse_str("018bcfe5-6800-7000-8000-000000000002").unwrap()
+        );
+        assert_eq!(event.payload["trigger"], "tab_activated");
     }
 }
