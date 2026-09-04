@@ -78,53 +78,52 @@ impl<'a, R: RawEventLookupRepository> ContentAccessEngine<'a, R> {
             return Ok(None);
         }
         let indexed_sensitivity = serde_json::from_str::<SensitivityClass>(&raw.sensitivity_json)
-            .map_err(|error| ContentAccessError::MalformedIndexedSensitivity {
+            .map_err(|error| {
+            ContentAccessError::MalformedIndexedSensitivity {
                 event_id,
                 message: error.to_string(),
-            })?;
+            }
+        })?;
         if !event_sensitivity_allowed(indexed_sensitivity, grant.max_event_sensitivity) {
             return Ok(None);
         }
 
-        let (scope_id, event_sensitivity, refs, envelope_event_id) = match raw.schema_version {
-            1 => {
-                let envelope: EventEnvelope =
-                    serde_json::from_str(&raw.envelope_json).map_err(|error| {
-                        ContentAccessError::MalformedRawEvent {
+        let (scope_id, event_sensitivity, refs, envelope_event_id) =
+            match raw.schema_version {
+                1 => {
+                    let envelope: EventEnvelope = serde_json::from_str(&raw.envelope_json)
+                        .map_err(|error| ContentAccessError::MalformedRawEvent {
                             event_id,
                             message: error.to_string(),
-                        }
-                    })?;
-                let refs = match envelope.payload {
-                    EventPayload::ContentObserved { refs, .. } => refs,
-                    _ => Vec::new(),
-                };
-                (
-                    envelope.scope_id,
-                    envelope.sensitivity,
-                    refs,
-                    envelope.event_id,
-                )
-            }
-            2 => {
-                let envelope: EventEnvelopeV2 =
-                    serde_json::from_str(&raw.envelope_json).map_err(|error| {
-                        ContentAccessError::MalformedRawEvent {
+                        })?;
+                    let refs = match envelope.payload {
+                        EventPayload::ContentObserved { refs, .. } => refs,
+                        _ => Vec::new(),
+                    };
+                    (
+                        envelope.scope_id,
+                        envelope.sensitivity,
+                        refs,
+                        envelope.event_id,
+                    )
+                }
+                2 => {
+                    let envelope: EventEnvelopeV2 = serde_json::from_str(&raw.envelope_json)
+                        .map_err(|error| ContentAccessError::MalformedRawEvent {
                             event_id,
                             message: error.to_string(),
-                        }
-                    })?;
-                (
-                    envelope.scope_id,
-                    envelope.sensitivity,
-                    envelope.content_refs,
-                    envelope.event_id,
-                )
-            }
-            version => {
-                return Err(ContentAccessError::UnsupportedVersion { event_id, version });
-            }
-        };
+                        })?;
+                    (
+                        envelope.scope_id,
+                        envelope.sensitivity,
+                        envelope.content_refs,
+                        envelope.event_id,
+                    )
+                }
+                version => {
+                    return Err(ContentAccessError::UnsupportedVersion { event_id, version });
+                }
+            };
 
         if envelope_event_id != raw.event_id
             || scope_id != raw.scope_id
@@ -287,23 +286,17 @@ mod tests {
 
         assert!(
             access
-                .authorize_reference(
-                    event_a,
-                    &shared_elsewhere.sha256,
-                    sensitive_grant(),
-                    |_| true,
-                )
+                .authorize_reference(event_a, &shared_elsewhere.sha256, sensitive_grant(), |_| {
+                    true
+                },)
                 .unwrap()
                 .is_none()
         );
         assert!(
             access
-                .authorize_reference(
-                    event_b,
-                    &shared_elsewhere.sha256,
-                    sensitive_grant(),
-                    |_| true,
-                )
+                .authorize_reference(event_b, &shared_elsewhere.sha256, sensitive_grant(), |_| {
+                    true
+                },)
                 .unwrap()
                 .is_some()
         );
@@ -334,12 +327,7 @@ mod tests {
         );
         assert!(
             access
-                .authorize_reference(
-                    event_id,
-                    &secret.sha256,
-                    sensitive_grant(),
-                    |_| true,
-                )
+                .authorize_reference(event_id, &secret.sha256, sensitive_grant(), |_| true,)
                 .unwrap()
                 .is_none()
         );
