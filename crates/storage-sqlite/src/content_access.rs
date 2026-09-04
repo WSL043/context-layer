@@ -27,11 +27,12 @@ impl RawEventLookupRepository for SqliteRepository {
             )
             .optional()?;
         row.map(|(schema_version, scope_id, sensitivity, envelope_json)| {
-            Ok(RawEventLookup {
+            let sensitivity = serde_json::from_str::<SensitivityClass>(&sensitivity)?;
+            Ok::<RawEventLookup, StorageError>(RawEventLookup {
                 event_id,
                 schema_version,
                 scope_id: ScopeId(scope_id),
-                sensitivity: serde_json::from_str::<SensitivityClass>(&sensitivity)?,
+                sensitivity,
                 envelope_json,
             })
         })
