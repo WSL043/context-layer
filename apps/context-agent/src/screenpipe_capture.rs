@@ -171,6 +171,27 @@ mod tests {
     }
 
     #[test]
+    fn oversized_screenshot_is_explicit_without_a_screenshot_reference() {
+        let (root, vault) = temp_vault();
+        let event = event_from_frame(
+            &vault,
+            frame("screen text"),
+            ScreenpipeScreenshot::OmittedTooLarge,
+            OffsetDateTime::from_unix_timestamp(1_700_000_001).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(event.payload["screenshot_status"], "omitted_too_large");
+        assert_eq!(event.content_refs.len(), 1);
+        assert_eq!(
+            event.content_refs[0].media_type,
+            "text/plain; charset=utf-8"
+        );
+        assert_eq!(event.payload["content_roles"].as_array().unwrap().len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn non_png_frame_body_is_rejected_before_cursor_can_advance() {
         let (root, vault) = temp_vault();
         assert!(
