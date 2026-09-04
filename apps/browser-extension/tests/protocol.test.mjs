@@ -63,9 +63,32 @@ test("active page carries focused web state without page contents", () => {
   assert.equal("content" in message, false);
 });
 
-test("active page rejects privileged browser URLs", () => {
+test("checked-in browser v2 fixture matches the JavaScript producer", () => {
+  const fixture = JSON.parse(fs.readFileSync(
+    new URL("../../../schemas/browser/v2/active_page_changed.json", import.meta.url),
+    "utf8",
+  ));
+  const actual = activePageChanged(
+    {
+      tabId: 12,
+      windowId: 3,
+      url: "https://www.google.com/search?q=context+layer",
+      title: "context layer - Google Search",
+      pinned: false,
+      windowFocused: true,
+    },
+    "018bcfe5-6800-7000-8000-000000000002",
+    8,
+    "tab_activated",
+    "2026-09-01T00:00:01Z",
+  );
+  assert.deepEqual(actual, fixture);
+});
+
+test("active page rejects privileged and hostless URLs", () => {
   assert.equal(isWebUrl("https://example.test/"), true);
   assert.equal(isWebUrl("chrome://settings/"), false);
+  assert.equal(isWebUrl("https://"), false);
   assert.throws(() => activePageChanged(
     {
       tabId: 1,
