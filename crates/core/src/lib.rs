@@ -1,3 +1,5 @@
+pub mod retrieval;
+
 use context_contracts::{
     CURRENT_ENVELOPE_VERSION, CURRENT_SCHEMA_VERSION, EventEnvelope, EventEnvelopeV2, EventPayload,
     EvidenceDescriptor, EvidenceKind, FileChange, FileIdentity, SensitivityClass, SourceId,
