@@ -2,14 +2,18 @@ use std::{env, io};
 
 use anyhow::{Context, Result, bail};
 use context_contracts::{
-    EventEnvelope, EventPayload, LOCAL_API_VERSION, LocalApiCommand, LocalApiRequest,
-    LocalApiResponse,
+    EventEnvelope, EventEnvelopeV2, EventPayload, LOCAL_API_VERSION, LocalApiCommand,
+    LocalApiRequest, LocalApiResponse, SensitivityClass,
 };
 use context_local_ipc::{NamedPipeClient, read_frame, write_frame};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use time::OffsetDateTime;
 use url::Url;
 use uuid::Uuid;
+
+const BROWSER_PROTOCOL_V1: u16 = 1;
+const BROWSER_PROTOCOL_V2: u16 = 2;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -23,6 +27,21 @@ enum BrowserMessage {
         url: String,
         referrer: Option<String>,
         final_path: String,
+        #[serde(with = "time::serde::rfc3339")]
+        observed_at: OffsetDateTime,
+    },
+    ActivePageChanged {
+        protocol_version: u16,
+        browser: String,
+        observation_id: Uuid,
+        source_sequence: u64,
+        tab_id: u64,
+        window_id: u64,
+        url: String,
+        title: String,
+        pinned: bool,
+        window_focused: bool,
+        trigger: String,
         #[serde(with = "time::serde::rfc3339")]
         observed_at: OffsetDateTime,
     },
@@ -70,11 +89,14 @@ fn main() -> Result<()> {
     }
 
     let message: BrowserMessage = read_frame(&mut io::stdin().lock())?;
-    let request = request_from_browser(message)?;
+    let (bridge_protocol_version, request) = request_from_browser(message)?;
     let mut pipe = NamedPipeClient::connect_current_user(5_000)
         .context("connect to the current-user context agent")?;
     write_frame(&mut pipe, &request)?;
-    let response: LocalApiResponse = read_frame(&mut pipe)?;
+    let mut response: LocalApiResponse = read_frame(&mut pipe)?;
+    // The browser bridge and local agent API version independently. Reusing the
+    // response shape is convenient, but the extension must receive its own bridge version.
+    response.protocol_version = bridge_protocol_version;
     write_frame(&mut io::stdout().lock(), &response)?;
     Ok(())
 }
@@ -99,9 +121,14 @@ fn load_allowed_origins() -> Result<Vec<String>> {
     Ok(config.allowed_origins)
 }
 
-fn request_from_browser(message: BrowserMessage) -> Result<LocalApiRequest> {
+fn request_from_browser(message: BrowserMessage) -> Result<(u16, LocalApiRequest)> {
     let (protocol_version, browser) = match &message {
         BrowserMessage::DownloadCompleted {
+            protocol_version,
+            browser,
+            ..
+        }
+        | BrowserMessage::ActivePageChanged {
             protocol_version,
             browser,
             ..
@@ -112,19 +139,26 @@ fn request_from_browser(message: BrowserMessage) -> Result<LocalApiRequest> {
             ..
         } => (*protocol_version, browser.to_ascii_lowercase()),
     };
-    if protocol_version != LOCAL_API_VERSION {
+
+    if !matches!(protocol_version, BROWSER_PROTOCOL_V1 | BROWSER_PROTOCOL_V2) {
         bail!(
-            "unsupported browser protocol version {}; expected {}",
+            "unsupported browser protocol version {}; supported versions are {} and {}",
             protocol_version,
-            LOCAL_API_VERSION
+            BROWSER_PROTOCOL_V1,
+            BROWSER_PROTOCOL_V2
         );
+    }
+    if matches!(message, BrowserMessage::ActivePageChanged { .. })
+        && protocol_version != BROWSER_PROTOCOL_V2
+    {
+        bail!("active-page observations require browser protocol version 2");
     }
     if !matches!(browser.as_str(), "chrome" | "edge" | "chromium") {
         bail!("browser must be chrome, edge, or chromium");
     }
-    let event = match message {
+
+    let command = match message {
         BrowserMessage::DownloadCompleted {
-            browser_download_id: _,
             source_sequence,
             download_id,
             url,
@@ -155,7 +189,63 @@ fn request_from_browser(message: BrowserMessage) -> Result<LocalApiRequest> {
             );
             event.event_id = download_id;
             event.source_sequence = Some(source_sequence);
-            event
+            LocalApiCommand::SubmitEvent {
+                event: Box::new(event),
+            }
+        }
+        BrowserMessage::ActivePageChanged {
+            observation_id,
+            source_sequence,
+            tab_id,
+            window_id,
+            url,
+            title,
+            pinned,
+            window_focused,
+            trigger,
+            observed_at,
+            ..
+        } => {
+            validate_web_url(&url).context("invalid active-page URL")?;
+            if title.len() > 4096 {
+                bail!("active-page title must be at most 4096 bytes");
+            }
+            if !matches!(
+                trigger.as_str(),
+                "startup"
+                    | "installed"
+                    | "tab_activated"
+                    | "page_updated"
+                    | "window_focused"
+                    | "window_blurred"
+            ) {
+                bail!("unsupported active-page trigger");
+            }
+            let mut event = EventEnvelopeV2::observed(
+                "browser.active_page_changed",
+                format!("browser.{browser}"),
+                "scope.personal",
+                observed_at,
+                json!({
+                    "browser": browser,
+                    "tab_id": tab_id,
+                    "window_id": window_id,
+                    "url": url,
+                    "title": title,
+                    "pinned": pinned,
+                    "window_focused": window_focused,
+                    "trigger": trigger,
+                }),
+                "context-native-host",
+                "Chromium tabs/windows active-page state through allowlisted native messaging origin",
+            );
+            event.event_id = observation_id;
+            event.source_sequence = Some(source_sequence);
+            event.device_id = env::var("COMPUTERNAME").ok();
+            event.sensitivity = SensitivityClass::Sensitive;
+            LocalApiCommand::SubmitEventV2 {
+                event: Box::new(event),
+            }
         }
         BrowserMessage::CollectorGap {
             gap_id,
@@ -167,9 +257,14 @@ fn request_from_browser(message: BrowserMessage) -> Result<LocalApiRequest> {
             if reason.is_empty() || reason.len() > 1024 {
                 bail!("collector gap reason must contain 1 to 1024 bytes");
             }
+            let scope = if protocol_version == BROWSER_PROTOCOL_V1 {
+                "scope.downloads"
+            } else {
+                "scope.personal"
+            };
             let mut event = EventEnvelope::observed(
                 format!("browser.{browser}"),
-                "scope.downloads",
+                scope,
                 observed_at,
                 EventPayload::CollectorGap {
                     collector: format!("browser.{browser}"),
@@ -181,19 +276,26 @@ fn request_from_browser(message: BrowserMessage) -> Result<LocalApiRequest> {
             );
             event.event_id = gap_id;
             event.source_sequence = last_source_sequence;
-            event
+            LocalApiCommand::SubmitEvent {
+                event: Box::new(event),
+            }
         }
     };
-    Ok(LocalApiRequest {
-        request_id: Uuid::now_v7(),
-        protocol_version: LOCAL_API_VERSION,
-        command: LocalApiCommand::SubmitEvent {
-            event: Box::new(event),
+
+    Ok((
+        protocol_version,
+        LocalApiRequest {
+            request_id: Uuid::now_v7(),
+            protocol_version: LOCAL_API_VERSION,
+            command,
         },
-    })
+    ))
 }
 
 fn validate_web_url(value: &str) -> Result<()> {
+    if value.len() > 16_384 {
+        bail!("URL must be at most 16384 bytes");
+    }
     let has_web_prefix = value
         .get(..7)
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
@@ -226,7 +328,8 @@ fn self_check() -> Result<()> {
     let mut framed = Vec::new();
     write_frame(&mut framed, &message)?;
     let decoded: BrowserMessage = read_frame(&mut framed.as_slice())?;
-    let request = request_from_browser(decoded)?;
+    let (bridge_version, request) = request_from_browser(decoded)?;
+    assert_eq!(bridge_version, BROWSER_PROTOCOL_V2);
     assert!(matches!(
         request.command,
         LocalApiCommand::SubmitEvent { .. }
@@ -236,7 +339,7 @@ fn self_check() -> Result<()> {
 }
 
 fn agent_self_check(final_path: Option<&str>) -> Result<()> {
-    let request = request_from_browser(fixture_message(final_path))?;
+    let (_, request) = request_from_browser(fixture_message(final_path))?;
     let mut pipe = NamedPipeClient::connect_current_user(5_000)
         .context("connect to the current-user context agent")?;
     write_frame(&mut pipe, &request)?;
@@ -259,7 +362,7 @@ fn agent_self_check(final_path: Option<&str>) -> Result<()> {
 
 fn fixture_message(final_path: Option<&str>) -> BrowserMessage {
     BrowserMessage::DownloadCompleted {
-        protocol_version: LOCAL_API_VERSION,
+        protocol_version: BROWSER_PROTOCOL_V2,
         browser: "edge".into(),
         browser_download_id: 42,
         source_sequence: 7,
@@ -279,7 +382,7 @@ mod tests {
 
     fn message(url: &str) -> BrowserMessage {
         BrowserMessage::DownloadCompleted {
-            protocol_version: LOCAL_API_VERSION,
+            protocol_version: BROWSER_PROTOCOL_V2,
             browser: "edge".into(),
             browser_download_id: 42,
             source_sequence: 7,
@@ -291,9 +394,28 @@ mod tests {
         }
     }
 
+    fn active_page(protocol_version: u16, url: &str) -> BrowserMessage {
+        BrowserMessage::ActivePageChanged {
+            protocol_version,
+            browser: "edge".into(),
+            observation_id: Uuid::now_v7(),
+            source_sequence: 8,
+            tab_id: 12,
+            window_id: 3,
+            url: url.into(),
+            title: "context layer - Search".into(),
+            pinned: false,
+            window_focused: true,
+            trigger: "tab_activated".into(),
+            observed_at: OffsetDateTime::now_utc(),
+        }
+    }
+
     #[test]
     fn valid_download_becomes_a_versioned_submit_event() {
-        let request = request_from_browser(message("https://example.test/report.pdf")).unwrap();
+        let (bridge_version, request) =
+            request_from_browser(message("https://example.test/report.pdf")).unwrap();
+        assert_eq!(bridge_version, BROWSER_PROTOCOL_V2);
         assert_eq!(request.protocol_version, LOCAL_API_VERSION);
         assert!(matches!(
             request.command,
@@ -318,7 +440,7 @@ mod tests {
             unreachable!();
         };
         let expected = *download_id;
-        let request = request_from_browser(message).unwrap();
+        let (_, request) = request_from_browser(message).unwrap();
         let LocalApiCommand::SubmitEvent { event } = request.command else {
             unreachable!();
         };
@@ -326,9 +448,50 @@ mod tests {
     }
 
     #[test]
+    fn active_page_becomes_sensitive_v2_raw_evidence() {
+        let message = active_page(
+            BROWSER_PROTOCOL_V2,
+            "https://www.google.com/search?q=context+layer",
+        );
+        let BrowserMessage::ActivePageChanged { observation_id, .. } = &message else {
+            unreachable!();
+        };
+        let expected = *observation_id;
+        let (bridge_version, request) = request_from_browser(message).unwrap();
+        assert_eq!(bridge_version, BROWSER_PROTOCOL_V2);
+        let LocalApiCommand::SubmitEventV2 { event } = request.command else {
+            unreachable!();
+        };
+        assert_eq!(event.event_id, expected);
+        assert_eq!(event.event_type, "browser.active_page_changed");
+        assert_eq!(event.source_sequence, Some(8));
+        assert_eq!(event.sensitivity, SensitivityClass::Sensitive);
+        assert_eq!(
+            event.payload["url"],
+            "https://www.google.com/search?q=context+layer"
+        );
+        assert_eq!(event.payload["window_focused"], true);
+    }
+
+    #[test]
+    fn active_page_requires_bridge_v2_and_web_url() {
+        assert!(
+            request_from_browser(active_page(
+                BROWSER_PROTOCOL_V1,
+                "https://example.test/"
+            ))
+            .is_err()
+        );
+        assert!(
+            request_from_browser(active_page(BROWSER_PROTOCOL_V2, "chrome://settings/"))
+                .is_err()
+        );
+    }
+
+    #[test]
     fn browser_outbox_gap_becomes_a_collector_gap_event() {
-        let request = request_from_browser(BrowserMessage::CollectorGap {
-            protocol_version: LOCAL_API_VERSION,
+        let (_, request) = request_from_browser(BrowserMessage::CollectorGap {
+            protocol_version: BROWSER_PROTOCOL_V2,
             browser: "chromium".into(),
             gap_id: Uuid::now_v7(),
             last_source_sequence: Some(99),
@@ -341,13 +504,15 @@ mod tests {
         };
         assert!(matches!(event.payload, EventPayload::CollectorGap { .. }));
         assert_eq!(event.source_sequence, Some(99));
+        assert_eq!(event.scope_id.0, "scope.personal");
     }
 
     #[test]
-    fn checked_in_browser_fixture_is_accepted_by_the_native_host() {
+    fn checked_in_browser_v1_fixture_remains_accepted() {
         let fixture = include_str!("../../../schemas/browser/v1/download_completed.json");
         let message: BrowserMessage = serde_json::from_str(fixture).unwrap();
-        let request = request_from_browser(message).unwrap();
+        let (bridge_version, request) = request_from_browser(message).unwrap();
+        assert_eq!(bridge_version, BROWSER_PROTOCOL_V1);
         let LocalApiCommand::SubmitEvent { event } = request.command else {
             unreachable!();
         };
