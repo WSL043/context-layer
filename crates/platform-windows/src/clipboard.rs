@@ -27,6 +27,32 @@ impl ClipboardSnapshot {
 }
 
 #[cfg(windows)]
+struct ClipboardGuard;
+
+#[cfg(windows)]
+impl Drop for ClipboardGuard {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::System::DataExchange::CloseClipboard();
+        }
+    }
+}
+
+#[cfg(windows)]
+struct GlobalMemoryLock {
+    handle: *mut core::ffi::c_void,
+}
+
+#[cfg(windows)]
+impl Drop for GlobalMemoryLock {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::System::Memory::GlobalUnlock(self.handle);
+        }
+    }
+}
+
+#[cfg(windows)]
 pub fn clipboard_snapshot_if_changed(
     last_sequence: Option<u32>,
     max_raw_utf16_bytes: usize,
@@ -35,10 +61,10 @@ pub fn clipboard_snapshot_if_changed(
 
     use windows_sys::Win32::System::{
         DataExchange::{
-            CloseClipboard, GetClipboardData, GetClipboardSequenceNumber,
-            IsClipboardFormatAvailable, OpenClipboard,
+            GetClipboardData, GetClipboardSequenceNumber, IsClipboardFormatAvailable,
+            OpenClipboard,
         },
-        Memory::{GlobalLock, GlobalSize, GlobalUnlock},
+        Memory::{GlobalLock, GlobalSize},
         Ole::CF_UNICODETEXT,
     };
 
@@ -56,13 +82,7 @@ pub fn clipboard_snapshot_if_changed(
 
     let format_available = unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT) } != 0;
     if !format_available {
-        let after = unsafe { GetClipboardSequenceNumber() };
-        if after != sequence {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "clipboard changed while checking available formats",
-            ));
-        }
+        ensure_sequence_stable(sequence, "checking available formats")?;
         return Ok(Some(ClipboardSnapshot::NonText { sequence }));
     }
 
@@ -77,13 +97,7 @@ pub fn clipboard_snapshot_if_changed(
     }
     let raw_size = unsafe { GlobalSize(handle) };
     if raw_size > max_raw_utf16_bytes {
-        let after = unsafe { GetClipboardSequenceNumber() };
-        if after != sequence {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "clipboard changed while measuring text",
-            ));
-        }
+        ensure_sequence_stable(sequence, "measuring text")?;
         return Ok(Some(ClipboardSnapshot::OversizedText {
             sequence,
             raw_utf16_bytes: raw_size as u64,
@@ -101,39 +115,25 @@ pub fn clipboard_snapshot_if_changed(
     let text_end = units.iter().position(|unit| *unit == 0).unwrap_or(unit_count);
     let text = String::from_utf16_lossy(&units[..text_end]);
 
-    let after = unsafe { GetClipboardSequenceNumber() };
-    if after != sequence {
-        return Err(io::Error::new(
-            io::ErrorKind::WouldBlock,
-            "clipboard changed while reading text",
-        ));
-    }
+    ensure_sequence_stable(sequence, "reading text")?;
 
     Ok(Some(ClipboardSnapshot::Text {
         sequence,
         text,
         raw_utf16_bytes: raw_size as u64,
     }))
+}
 
-    struct ClipboardGuard;
-    impl Drop for ClipboardGuard {
-        fn drop(&mut self) {
-            unsafe {
-                CloseClipboard();
-            }
-        }
+#[cfg(windows)]
+fn ensure_sequence_stable(expected: u32, operation: &str) -> io::Result<()> {
+    let after = unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() };
+    if after != expected {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            format!("clipboard changed while {operation}"),
+        ));
     }
-
-    struct GlobalMemoryLock {
-        handle: *mut core::ffi::c_void,
-    }
-    impl Drop for GlobalMemoryLock {
-        fn drop(&mut self) {
-            unsafe {
-                GlobalUnlock(self.handle);
-            }
-        }
-    }
+    Ok(())
 }
 
 #[cfg(not(windows))]
